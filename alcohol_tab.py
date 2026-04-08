@@ -1,8 +1,12 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, 
                              QTableWidgetItem, QPushButton, QLabel, QLineEdit, 
-                             QFormLayout, QDialog, QComboBox, QMessageBox)
+                             QFormLayout, QDialog, QComboBox, QMessageBox, 
+                             QFileDialog, QScrollArea)
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPixmap
 from database import DatabaseManager
+import os
+from PIL import Image
 
 
 class AlcoholDialog(QDialog):
@@ -13,8 +17,10 @@ class AlcoholDialog(QDialog):
         self.data = data or {}
         self.setWindowTitle("Add Alcohol" if not data else "Edit Alcohol")
         self.setModal(True)
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(500)
+        self.image_path = self.data.get('image_path', '')
         self.init_ui()
+        self.load_existing_image()
     
     def init_ui(self):
         layout = QFormLayout()
@@ -60,6 +66,24 @@ class AlcoholDialog(QDialog):
         self.availability_combo.addItems(['Yes', 'No'])
         self.availability_combo.setCurrentText(self.data.get('Availability', 'Yes'))
         layout.addRow("Availability:", self.availability_combo)
+        
+        # Image upload
+        image_layout = QHBoxLayout()
+        self.upload_button = QPushButton("Upload Image")
+        self.upload_button.clicked.connect(self.upload_image)
+        self.remove_image_button = QPushButton("Remove Image")
+        self.remove_image_button.clicked.connect(self.remove_image)
+        image_layout.addWidget(self.upload_button)
+        image_layout.addWidget(self.remove_image_button)
+        layout.addRow("Image:", image_layout)
+        
+        # Image preview
+        self.image_label = QLabel()
+        self.image_label.setFixedSize(200, 200)
+        self.image_label.setStyleSheet("border: 1px solid gray; background-color: #f0f0f0;")
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setText("No image")
+        layout.addRow("Preview:", self.image_label)
         
         # Buttons
         button_layout = QHBoxLayout()
@@ -112,10 +136,65 @@ class AlcoholDialog(QDialog):
             'Price_NZD_700ml': price,
             'Taste': self.taste_edit.text().strip(),
             'Substitute': self.substitute_edit.text().strip(),
-            'Availability': self.availability_combo.currentText()
+            'Availability': self.availability_combo.currentText(),
+            'image_path': self.image_path
         }
         
         self.accept()
+    
+    def upload_image(self):
+        """Upload and process image for alcohol."""
+        file_dialog = QFileDialog()
+        file_dialog.setNameFilter("Images (*.png *.jpg *.jpeg *.bmp *.gif)")
+        if file_dialog.exec():
+            file_path = file_dialog.selectedFiles()[0]
+            self.process_image(file_path)
+    
+    def process_image(self, file_path):
+        """Process image: resize to 512x512 and save to images/liquors/."""
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs('images/liquors', exist_ok=True)
+            
+            # Get brand, base_liquor, and type for filename
+            brand = self.brand_edit.text().strip() or 'unknown'
+            base_liquor = self.base_liquor_combo.currentText().strip() or 'unknown'
+            liquor_type = self.type_edit.text().strip() or 'unknown'
+            
+            # Create safe filename
+            safe_brand = brand.replace(' ', '_').replace('/', '_').replace('\\', '_')
+            safe_base = base_liquor.replace(' ', '_').replace('/', '_').replace('\\', '_')
+            safe_type = liquor_type.replace(' ', '_').replace('/', '_').replace('\\', '_')
+            filename = f"{safe_brand}_{safe_base}_{safe_type}.jpg"
+            save_path = os.path.join('images/liquors', filename)
+            
+            # Open and resize image
+            img = Image.open(file_path)
+            img = img.resize((512, 512), Image.Resampling.LANCZOS)
+            img.save(save_path, 'JPEG', quality=85)
+            
+            self.image_path = save_path
+            self.update_preview(save_path)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to process image: {e}")
+    
+    def remove_image(self):
+        """Remove uploaded image."""
+        self.image_path = ''
+        self.image_label.clear()
+        self.image_label.setText("No image")
+    
+    def load_existing_image(self):
+        """Load existing image if available."""
+        if self.image_path and os.path.exists(self.image_path):
+            self.update_preview(self.image_path)
+    
+    def update_preview(self, image_path):
+        """Update image preview label."""
+        pixmap = QPixmap(image_path)
+        scaled_pixmap = pixmap.scaled(200, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        self.image_label.setPixmap(scaled_pixmap)
 
 
 class AlcoholTab(QWidget):
@@ -159,10 +238,10 @@ class AlcoholTab(QWidget):
         
         # Table
         self.table = QTableWidget()
-        self.table.setColumnCount(9)
+        self.table.setColumnCount(10)
         self.table.setHorizontalHeaderLabels([
             'Brand', 'Base Liquor', 'Type', 'ABV', 'Country', 
-            'Price', 'Taste', 'Substitute', 'Availability'
+            'Price', 'Taste', 'Substitute', 'Availability', 'Image Path'
         ])
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -192,6 +271,7 @@ class AlcoholTab(QWidget):
             self.table.setItem(row, 6, QTableWidgetItem(item.get('Taste', '')))
             self.table.setItem(row, 7, QTableWidgetItem(item.get('Substitute', '')))
             self.table.setItem(row, 8, QTableWidgetItem(item.get('Availability', '')))
+            self.table.setItem(row, 9, QTableWidgetItem(item.get('image_path', '')))
         
         self.table.resizeColumnsToContents()
     
@@ -236,7 +316,8 @@ class AlcoholTab(QWidget):
             'Price_NZD_700ml': self.table.item(selected_row, 5).text(),
             'Taste': self.table.item(selected_row, 6).text(),
             'Substitute': self.table.item(selected_row, 7).text(),
-            'Availability': self.table.item(selected_row, 8).text()
+            'Availability': self.table.item(selected_row, 8).text(),
+            'image_path': self.table.item(selected_row, 9).text() if self.table.columnCount() > 9 else ''
         }
         
         dialog = AlcoholDialog(self, data)

@@ -38,3 +38,6 @@ Thumbs.db
 
 # Database (optional - uncomment if you want to track the DB file)
 # *.db
+
+# Images
+images/
