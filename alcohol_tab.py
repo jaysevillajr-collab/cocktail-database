@@ -3,7 +3,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QFormLayout, QDialog, QComboBox, QMessageBox, 
                              QFileDialog, QScrollArea)
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QPixmap, QDoubleValidator, QIntValidator
 from database import DatabaseManager
 import os
 from PIL import Image
@@ -21,6 +21,9 @@ class AlcoholDialog(QDialog):
         self.image_path = self.data.get('image_path', '')
         self.init_ui()
         self.load_existing_image()
+        # Trigger validation for existing data
+        self.validate_abv_input(self.abv_edit.text())
+        self.validate_price_input(self.price_edit.text())
     
     def init_ui(self):
         layout = QFormLayout()
@@ -43,6 +46,8 @@ class AlcoholDialog(QDialog):
         
         # ABV (optional)
         self.abv_edit = QLineEdit(self.data.get('ABV', ''))
+        self.abv_edit.setValidator(QDoubleValidator(0.0, 100.0, 2))
+        self.abv_edit.textChanged.connect(self.validate_abv_input)
         layout.addRow("ABV:", self.abv_edit)
         
         # Country (optional)
@@ -51,6 +56,8 @@ class AlcoholDialog(QDialog):
         
         # Price (optional)
         self.price_edit = QLineEdit(self.data.get('Price_NZD_700ml', ''))
+        self.price_edit.setPlaceholderText("$0.00")
+        self.price_edit.textChanged.connect(self.validate_price_input)
         layout.addRow("Price (NZD 700ml):", self.price_edit)
         
         # Taste (optional)
@@ -96,6 +103,20 @@ class AlcoholDialog(QDialog):
         
         layout.addRow(button_layout)
         self.setLayout(layout)
+    
+    def validate_abv_input(self, text):
+        """Validate ABV input in real-time."""
+        if text and not text.replace('.', '').isdigit():
+            self.abv_edit.setStyleSheet("background-color: #ffcccc;")
+        else:
+            self.abv_edit.setStyleSheet("")
+    
+    def validate_price_input(self, text):
+        """Validate Price input in real-time."""
+        if text and not (text.startswith('$') or text.replace('.', '').replace(',', '').isdigit()):
+            self.price_edit.setStyleSheet("background-color: #ffcccc;")
+        else:
+            self.price_edit.setStyleSheet("")
     
     def validate_and_save(self):
         """Validate input and save."""
@@ -197,12 +218,123 @@ class AlcoholDialog(QDialog):
         self.image_label.setPixmap(scaled_pixmap)
 
 
+class AlcoholInfoDialog(QDialog):
+    """Dialog for displaying alcohol information (read-only)."""
+    
+    def __init__(self, parent=None, data=None, parent_tab=None):
+        super().__init__(parent)
+        self.data = data or {}
+        self.parent_tab = parent_tab
+        self.setWindowTitle("Alcohol Information")
+        self.setModal(True)
+        self.setMinimumWidth(500)
+        self.init_ui()
+        self.load_image()
+    
+    def init_ui(self):
+        layout = QFormLayout()
+        
+        # Brand
+        brand_label = QLabel(self.data.get('Brand', ''))
+        layout.addRow("Brand:", brand_label)
+        
+        # Base_Liquor
+        base_liquor_label = QLabel(self.data.get('Base_Liquor', ''))
+        layout.addRow("Base Liquor:", base_liquor_label)
+        
+        # Type
+        type_label = QLabel(self.data.get('Type', ''))
+        layout.addRow("Type:", type_label)
+        
+        # ABV
+        abv_label = QLabel(self.data.get('ABV', ''))
+        layout.addRow("ABV:", abv_label)
+        
+        # Country
+        country_label = QLabel(self.data.get('Country', ''))
+        layout.addRow("Country:", country_label)
+        
+        # Price
+        price_label = QLabel(self.data.get('Price_NZD_700ml', ''))
+        layout.addRow("Price (NZD 700ml):", price_label)
+        
+        # Taste
+        taste_label = QLabel(self.data.get('Taste', ''))
+        layout.addRow("Taste:", taste_label)
+        
+        # Substitute
+        substitute_label = QLabel(self.data.get('Substitute', ''))
+        layout.addRow("Substitute:", substitute_label)
+        
+        # Availability
+        availability_label = QLabel(self.data.get('Availability', ''))
+        layout.addRow("Availability:", availability_label)
+        
+        # Image preview
+        self.image_label = QLabel()
+        self.image_label.setFixedSize(200, 200)
+        self.image_label.setStyleSheet("border: 1px solid gray; background-color: #f0f0f0;")
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setText("No image")
+        layout.addRow("Image:", self.image_label)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.edit_button = QPushButton("Edit")
+        self.delete_button = QPushButton("Delete")
+        self.close_button = QPushButton("Close")
+        self.close_button.clicked.connect(self.accept)
+        if self.parent_tab:
+            self.edit_button.clicked.connect(lambda: self.edit_item())
+            self.delete_button.clicked.connect(lambda: self.delete_item())
+        else:
+            self.edit_button.setEnabled(False)
+            self.delete_button.setEnabled(False)
+        button_layout.addWidget(self.edit_button)
+        button_layout.addWidget(self.delete_button)
+        button_layout.addWidget(self.close_button)
+        layout.addRow(button_layout)
+        
+        self.setLayout(layout)
+    
+    def load_image(self):
+        """Load image if available."""
+        image_path = self.data.get('image_path', '')
+        if image_path and os.path.exists(image_path):
+            pixmap = QPixmap(image_path)
+            scaled_pixmap = pixmap.scaled(200, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.image_label.setPixmap(scaled_pixmap)
+    
+    def edit_item(self):
+        """Edit the current item."""
+        self.accept()
+        # Find the row in the parent table
+        brand = self.data.get('Brand', '')
+        for row in range(self.parent_tab.table.rowCount()):
+            if self.parent_tab.table.item(row, 0).text() == brand:
+                self.parent_tab.table.selectRow(row)
+                self.parent_tab.edit_alcohol()
+                break
+    
+    def delete_item(self):
+        """Delete the current item."""
+        self.accept()
+        # Find the row in the parent table
+        brand = self.data.get('Brand', '')
+        for row in range(self.parent_tab.table.rowCount()):
+            if self.parent_tab.table.item(row, 0).text() == brand:
+                self.parent_tab.table.selectRow(row)
+                self.parent_tab.delete_alcohol()
+                break
+
+
 class AlcoholTab(QWidget):
     """Tab for managing alcohol inventory."""
     
     def __init__(self, db: DatabaseManager):
         super().__init__()
         self.db = db
+        self.action_logs = []
         self.init_ui()
         self.load_data()
     
@@ -246,10 +378,23 @@ class AlcoholTab(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setAlternatingRowColors(True)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.cellDoubleClicked.connect(self.show_alcohol_info)
+        self.table.setSortingEnabled(True)
         
         layout.addLayout(search_layout)
         layout.addLayout(button_layout)
         layout.addWidget(self.table)
+        
+        # Log display
+        log_label = QLabel("Recent Actions:")
+        self.log_display = QLabel()
+        self.log_display.setStyleSheet("background-color: #f0f0f0; border: 1px solid gray; padding: 5px;")
+        self.log_display.setWordWrap(True)
+        self.update_log_display()
+        
+        layout.addWidget(log_label)
+        layout.addWidget(self.log_display)
         self.setLayout(layout)
     
     def load_data(self):
@@ -275,6 +420,23 @@ class AlcoholTab(QWidget):
         
         self.table.resizeColumnsToContents()
     
+    def add_log(self, action):
+        """Add an action to the log with timestamp."""
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        self.action_logs.append(f"{timestamp} - {action}")
+        # Keep only last 3 actions
+        if len(self.action_logs) > 3:
+            self.action_logs = self.action_logs[-3:]
+        self.update_log_display()
+    
+    def update_log_display(self):
+        """Update the log display with recent actions."""
+        if self.action_logs:
+            self.log_display.setText("\n".join(self.action_logs))
+        else:
+            self.log_display.setText("No recent actions")
+    
     def filter_data(self):
         """Filter table data based on search text."""
         search_text = self.search_edit.text().lower()
@@ -294,6 +456,7 @@ class AlcoholTab(QWidget):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             if self.db.add_alcohol(dialog.result_data):
                 QMessageBox.information(self, "Success", "Alcohol added successfully")
+                self.add_log(f"Added alcohol: {dialog.result_data['Brand']}")
                 self.load_data()
             else:
                 QMessageBox.critical(self, "Error", "Failed to add alcohol")
@@ -324,6 +487,7 @@ class AlcoholTab(QWidget):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             if self.db.update_alcohol(brand, dialog.result_data):
                 QMessageBox.information(self, "Success", "Alcohol updated successfully")
+                self.add_log(f"Edited alcohol: {dialog.result_data['Brand']}")
                 self.load_data()
             else:
                 QMessageBox.critical(self, "Error", "Failed to update alcohol")
@@ -336,15 +500,48 @@ class AlcoholTab(QWidget):
             return
         
         brand = self.table.item(selected_row, 0).text()
-        reply = QMessageBox.question(
+        
+        # First confirmation
+        reply1 = QMessageBox.question(
             self, 'Confirm Delete',
             f'Are you sure you want to delete "{brand}"?',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         
-        if reply == QMessageBox.StandardButton.Yes:
+        if reply1 != QMessageBox.StandardButton.Yes:
+            return
+        
+        # Second confirmation
+        reply2 = QMessageBox.question(
+            self, 'Confirm Delete',
+            f'Are you REALLY sure you want to delete "{brand}"? This action cannot be undone.',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply2 == QMessageBox.StandardButton.Yes:
             if self.db.delete_alcohol(brand):
                 QMessageBox.information(self, "Success", "Alcohol deleted successfully")
+                self.add_log(f"Deleted alcohol: {brand}")
                 self.load_data()
             else:
                 QMessageBox.critical(self, "Error", "Failed to delete alcohol")
+    
+    def show_alcohol_info(self, row, column):
+        """Show alcohol information dialog when row is double-clicked."""
+        # Get current data from table
+        brand = self.table.item(row, 0).text()
+        data = {
+            'Brand': brand,
+            'Base_Liquor': self.table.item(row, 1).text(),
+            'Type': self.table.item(row, 2).text(),
+            'ABV': self.table.item(row, 3).text(),
+            'Country': self.table.item(row, 4).text(),
+            'Price_NZD_700ml': self.table.item(row, 5).text(),
+            'Taste': self.table.item(row, 6).text(),
+            'Substitute': self.table.item(row, 7).text(),
+            'Availability': self.table.item(row, 8).text(),
+            'image_path': self.table.item(row, 9).text() if self.table.columnCount() > 9 else ''
+        }
+        
+        dialog = AlcoholInfoDialog(self, data, parent_tab=self)
+        dialog.exec()
