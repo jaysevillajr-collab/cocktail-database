@@ -21,6 +21,7 @@ class AlcoholDialog(QDialog):
         self.setMinimumWidth(500)
         self.setAcceptDrops(True)
         self.image_path = self.data.get('image_path', '')
+        self.create_image_folders()
         self.init_ui()
         self.load_existing_image()
         # Trigger validation for existing data
@@ -28,6 +29,10 @@ class AlcoholDialog(QDialog):
         self.validate_price_input(self.price_edit.text())
         # Add fade-in animation
         self.fade_in()
+    
+    def create_image_folders(self):
+        """Create image folders if they don't exist."""
+        os.makedirs('images/liquors', exist_ok=True)
     
     def fade_in(self):
         """Add fade-in animation to the dialog."""
@@ -62,14 +67,30 @@ class AlcoholDialog(QDialog):
             for url in event.mimeData().urls():
                 file_path = url.toLocalFile()
                 if file_path and os.path.exists(file_path):
-                    # Check if it's an image file
+                    # Check if it's an image file by trying to open it
                     try:
                         img = Image.open(file_path)
-                        img.verify()
-                        self.image_path = file_path
+                        # Copy image to images/liquors folder
+                        brand = self.brand_edit.text() if self.brand_edit.text() else 'temp'
+                        base_liquor = self.base_liquor_combo.currentText() if self.base_liquor_combo.currentText() else 'unknown'
+                        liquor_type = self.type_edit.text() if self.type_edit.text() else 'unknown'
+                        
+                        # Create safe filename
+                        safe_brand = brand.replace(' ', '_').replace('/', '_').replace('\\', '_')
+                        safe_base = base_liquor.replace(' ', '_').replace('/', '_').replace('\\', '_')
+                        safe_type = liquor_type.replace(' ', '_').replace('/', '_').replace('\\', '_')
+                        filename = f"{safe_brand}_{safe_base}_{safe_type}.jpg"
+                        save_path = os.path.join('images/liquors', filename)
+                        
+                        # Resize image
+                        img = img.resize((512, 512), Image.Resampling.LANCZOS)
+                        img.save(save_path, 'JPEG', quality=85)
+                        
+                        self.image_path = save_path
                         self.load_existing_image()
                         break
-                    except Exception:
+                    except Exception as e:
+                        QMessageBox.critical(self, "Error", f"Failed to process dropped image: {e}")
                         continue
         event.acceptProposedAction()
     
@@ -496,7 +517,13 @@ class AlcoholTab(QWidget):
         self.network_manager = QNetworkAccessManager()
         self.network_manager.finished.connect(self.on_flag_loaded)
         self.init_ui()
+        self.create_image_folders()
         self.load_data()
+    
+    def create_image_folders(self):
+        """Create image folders if they don't exist."""
+        os.makedirs('images/liquors', exist_ok=True)
+        os.makedirs('images/flags', exist_ok=True)
     
     def init_ui(self):
         """Initialize the UI components."""
@@ -605,17 +632,32 @@ class AlcoholTab(QWidget):
         self.details_layout = QVBoxLayout(self.details_container)
         self.details_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Flag image label (background)
+        # Images container (horizontal layout for side-by-side)
+        self.images_container = QWidget()
+        self.images_layout = QHBoxLayout(self.images_container)
+        self.images_layout.setContentsMargins(0, 5, 0, 5)
+        self.images_layout.setSpacing(10)
+        
+        # Flag label
         self.flag_label = QLabel()
-        self.flag_label.setMinimumHeight(200)
+        self.flag_label.setMaximumSize(180, 120)
         self.flag_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.flag_label.setStyleSheet("border: none;")
-        self.details_layout.addWidget(self.flag_label)
+        self.images_layout.addWidget(self.flag_label)
         
-        # Text label (overlay)
+        # Alcohol image label
+        self.alcohol_image_label = QLabel()
+        self.alcohol_image_label.setMaximumSize(180, 120)
+        self.alcohol_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.alcohol_image_label.setStyleSheet("border: none;")
+        self.images_layout.addWidget(self.alcohol_image_label)
+        
+        self.details_layout.addWidget(self.images_container)
+        
+        # Text label (with solid background for readability)
         self.details_label = QLabel("Select an item to view details")
         self.details_label.setWordWrap(True)
-        self.details_label.setStyleSheet("padding: 10px; background-color: rgba(255, 255, 255, 0.85); border-radius: 5px;")
+        self.details_label.setStyleSheet("padding: 15px; background-color: white; color: #333333; border-radius: 0px;")
         self.details_layout.addWidget(self.details_label)
         
         self.details_panel.setWidget(self.details_container)
@@ -713,8 +755,8 @@ class AlcoholTab(QWidget):
             if not pixmap.isNull():
                 # Scale pixmap to fit the flag label
                 scaled_pixmap = pixmap.scaled(
-                    380,
-                    200,
+                    120,
+                    100,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation
                 )
@@ -725,12 +767,14 @@ class AlcoholTab(QWidget):
         """Update details panel with selected item information."""
         if not self.split_view_button.isChecked():
             self.flag_label.clear()
+            self.alcohol_image_label.clear()
             return
         
         selected_row = self.table.currentRow()
         if selected_row < 0:
             self.details_label.setText("Select an item to view details")
             self.flag_label.clear()
+            self.alcohol_image_label.clear()
             return
         
         # Get item data from table directly to ensure it matches the current view
@@ -744,6 +788,7 @@ class AlcoholTab(QWidget):
             taste = self.table.item(selected_row, 6).text()
             substitute = self.table.item(selected_row, 7).text()
             availability = self.table.item(selected_row, 8).text()
+            image_path = self.table.item(selected_row, 9).text() if self.table.columnCount() > 9 else ''
             
             details_text = f"<b>Brand:</b> {brand}<br>"
             details_text += f"<b>Base Liquor:</b> {base_liquor}<br>"
@@ -756,18 +801,105 @@ class AlcoholTab(QWidget):
             details_text += f"<b>Availability:</b> {availability}"
             self.details_label.setText(details_text)
             
-            # Clear previous flag
+            # Clear previous images
             self.flag_label.clear()
+            self.alcohol_image_label.clear()
             
-            # Fetch and set country flag
-            country_code = self.COUNTRY_CODES.get(country, '')
-            if country_code:
-                flag_url = f"https://flagcdn.com/w640/{country_code}.png"
-                request = QNetworkRequest(QUrl(flag_url))
-                self.network_manager.get(request)
+            # Check what images are available
+            has_flag = bool(self.COUNTRY_CODES.get(country, ''))
+            has_alcohol_image = bool(image_path and os.path.exists(image_path))
+            
+            # Handle image display based on availability
+            if has_flag and has_alcohol_image:
+                # Show both side by side
+                country_code = self.COUNTRY_CODES.get(country, '')
+                flag_url = f"https://flagcdn.com/w320/{country_code}.png"
+                # Download and save flag to images/flags folder
+                flag_filename = f"flag_{country_code}.png"
+                flag_path = os.path.join('images/flags', flag_filename)
+                if not os.path.exists(flag_path):
+                    import urllib.request
+                    urllib.request.urlretrieve(flag_url, flag_path)
+                # Load flag from local file
+                pixmap = QPixmap(flag_path)
+                if not pixmap.isNull():
+                    scaled_pixmap = pixmap.scaled(
+                        180,
+                        120,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
+                    )
+                    self.flag_label.setPixmap(scaled_pixmap)
+                
+                # Load alcohol image
+                pixmap = QPixmap(image_path)
+                if not pixmap.isNull():
+                    scaled_pixmap = pixmap.scaled(
+                        180,
+                        120,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
+                    )
+                    self.alcohol_image_label.setPixmap(scaled_pixmap)
+                
+                # Reset sizes for side-by-side
+                self.flag_label.setMaximumSize(180, 120)
+                self.alcohol_image_label.setMaximumSize(180, 120)
+                self.images_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.flag_label.show()
+                self.alcohol_image_label.show()
+            elif has_flag:
+                # Show only flag centered
+                country_code = self.COUNTRY_CODES.get(country, '')
+                flag_url = f"https://flagcdn.com/w320/{country_code}.png"
+                # Download and save flag to images/flags folder
+                flag_filename = f"flag_{country_code}.png"
+                flag_path = os.path.join('images/flags', flag_filename)
+                if not os.path.exists(flag_path):
+                    import urllib.request
+                    urllib.request.urlretrieve(flag_url, flag_path)
+                # Load flag from local file
+                pixmap = QPixmap(flag_path)
+                if not pixmap.isNull():
+                    scaled_pixmap = pixmap.scaled(
+                        250,
+                        150,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
+                    )
+                    self.flag_label.setPixmap(scaled_pixmap)
+                self.flag_label.setMaximumSize(250, 150)
+                self.alcohol_image_label.hide()
+                self.images_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            elif has_alcohol_image:
+                # Show only alcohol image centered
+                pixmap = QPixmap(image_path)
+                if not pixmap.isNull():
+                    scaled_pixmap = pixmap.scaled(
+                        250,
+                        150,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
+                    )
+                    self.alcohol_image_label.setPixmap(scaled_pixmap)
+                    self.alcohol_image_label.setMaximumSize(250, 150)
+                    self.flag_label.hide()
+                self.images_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            else:
+                # Hide both
+                self.flag_label.hide()
+                self.alcohol_image_label.hide()
+                
+            # Reset visibility for next selection
+            self.flag_label.show()
+            self.alcohol_image_label.show()
+            self.flag_label.setMaximumSize(180, 120)
+            self.alcohol_image_label.setMaximumSize(180, 120)
+            
         except Exception as e:
             self.details_label.setText("Error loading details")
             self.flag_label.clear()
+            self.alcohol_image_label.clear()
     
     def toggle_view(self):
         """Toggle between table and gallery view."""
@@ -980,6 +1112,7 @@ class AlcoholTab(QWidget):
             price_item = QTableWidgetItem(item.get('Price_NZD_700ml', ''))
             taste_item = QTableWidgetItem(item.get('Taste', ''))
             substitute_item = QTableWidgetItem(item.get('Substitute', ''))
+            image_path = item.get('image_path', '')
             
             # Highlight matching cells if search is active
             if search_text:
@@ -987,6 +1120,36 @@ class AlcoholTab(QWidget):
                     if search_text in table_item.text().lower():
                         table_item.setBackground(Qt.GlobalColor.cyan)
                         table_item.setForeground(Qt.GlobalColor.black)
+            
+            # Set tooltip for all items based on image availability
+            if image_path and os.path.exists(image_path):
+                tooltip_text = f"<img src='{image_path}' width='200' height='200'>"
+            else:
+                country = item.get('Country', '')
+                country_code = self.COUNTRY_CODES.get(country, '')
+                if country_code:
+                    # Download flag to images/flags folder
+                    import urllib.request
+                    flag_url = f"https://flagcdn.com/w320/{country_code}.png"
+                    try:
+                        flag_filename = f"flag_{country_code}.png"
+                        flag_path = os.path.join('images/flags', flag_filename)
+                        
+                        # Only download if not already cached
+                        if not os.path.exists(flag_path):
+                            urllib.request.urlretrieve(flag_url, flag_path)
+                        
+                        tooltip_text = f"<img src='{flag_path}' width='200' height='150'>"
+                    except Exception:
+                        # Fallback to just country name if download fails
+                        tooltip_text = f"Country: {country}"
+                else:
+                    tooltip_text = ""
+            
+            # Apply tooltip to all items
+            for table_item in [brand_item, base_liquor_item, type_item, abv_item, country_item, price_item, taste_item, substitute_item]:
+                if tooltip_text:
+                    table_item.setToolTip(tooltip_text)
             
             self.table.setItem(row, 0, brand_item)
             self.table.setItem(row, 1, base_liquor_item)

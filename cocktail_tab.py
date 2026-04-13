@@ -1,12 +1,13 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, 
                              QTableWidgetItem, QPushButton, QLabel, QLineEdit, 
                              QFormLayout, QDialog, QComboBox, QMessageBox, QTextEdit, 
-                             QShortcut, QMenu, QCompleter, QSplitter, QScrollArea)
+                             QShortcut, QMenu, QCompleter, QSplitter, QScrollArea, QFileDialog)
 from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve
-from PyQt5.QtGui import QDoubleValidator, QIntValidator, QKeySequence
+from PyQt5.QtGui import QDoubleValidator, QIntValidator, QKeySequence, QPixmap, QDragEnterEvent, QDropEvent
 from datetime import datetime
 from database import DatabaseManager
 import os
+from PIL import Image
 
 
 class StarRatingWidget(QWidget):
@@ -69,11 +70,19 @@ class CocktailDialog(QDialog):
         self.setWindowTitle("Add Cocktail" if not data else "Edit Cocktail")
         self.setModal(True)
         self.setMinimumWidth(500)
+        self.setAcceptDrops(True)
+        self.image_path = self.data.get('image_path', '')
+        self.create_image_folders()
         self.init_ui()
+        self.load_existing_image()
         # Trigger validation for existing data
         self.validate_prep_time_input(self.prep_time_edit.text())
         # Add fade-in animation
         self.fade_in()
+    
+    def create_image_folders(self):
+        """Create image folders if they don't exist."""
+        os.makedirs('images/cocktails', exist_ok=True)
     
     def fade_in(self):
         """Add fade-in animation to the dialog."""
@@ -94,6 +103,97 @@ class CocktailDialog(QDialog):
         self.animation.setEasingCurve(QEasingCurve.InOutQuad)
         self.animation.finished.connect(self.accept)
         self.animation.start()
+    
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        """Handle drag enter event."""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+    
+    def dropEvent(self, event: QDropEvent):
+        """Handle drop event for image files."""
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                file_path = url.toLocalFile()
+                if file_path and os.path.exists(file_path):
+                    # Check if it's an image file by trying to open it
+                    try:
+                        img = Image.open(file_path)
+                        # Copy image to images/cocktails folder
+                        cocktail_name = self.name_edit.text() if self.name_edit.text() else 'temp'
+                        
+                        # Create safe filename
+                        safe_name = cocktail_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+                        filename = f"{safe_name}.jpg"
+                        save_path = os.path.join('images/cocktails', filename)
+                        
+                        # Resize image
+                        img = img.resize((512, 512), Image.Resampling.LANCZOS)
+                        img.save(save_path, 'JPEG', quality=85)
+                        
+                        self.image_path = save_path
+                        self.load_existing_image()
+                        break
+                    except Exception as e:
+                        QMessageBox.critical(self, "Error", f"Failed to process dropped image: {e}")
+                        continue
+        event.acceptProposedAction()
+    
+    def load_existing_image(self):
+        """Load existing image if available."""
+        if self.image_path and os.path.exists(self.image_path):
+            self.update_preview(self.image_path)
+    
+    def update_preview(self, image_path):
+        """Update image preview."""
+        pixmap = QPixmap(image_path)
+        if not pixmap.isNull():
+            scaled_pixmap = pixmap.scaled(200, 200, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.image_label.setPixmap(scaled_pixmap)
+            self.image_label.setText("")
+        else:
+            self.image_label.clear()
+            self.image_label.setText("No image")
+    
+    def upload_image(self):
+        """Upload and process image for cocktail."""
+        file_dialog = QFileDialog()
+        file_dialog.setNameFilter("Images (*.png *.jpg *.jpeg *.bmp *.gif)")
+        if file_dialog.exec():
+            file_path = file_dialog.selectedFiles()[0]
+            self.process_image(file_path)
+    
+    def process_image(self, file_path):
+        """Process image: resize to 512x512 and save to images/cocktails/."""
+        try:
+            # Create directory if it doesn't exist
+            os.makedirs('images/cocktails', exist_ok=True)
+            
+            # Get cocktail name for filename
+            cocktail_name = self.name_edit.text().strip() or 'unknown'
+            
+            # Create safe filename
+            safe_name = cocktail_name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+            filename = f"{safe_name}.jpg"
+            save_path = os.path.join('images/cocktails', filename)
+            
+            # Open and resize image
+            img = Image.open(file_path)
+            img = img.resize((512, 512), Image.Resampling.LANCZOS)
+            img.save(save_path, 'JPEG', quality=85)
+            
+            self.image_path = save_path
+            self.update_preview(save_path)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to process image: {e}")
+    
+    def remove_image(self):
+        """Remove uploaded image."""
+        self.image_path = ''
+        self.image_label.clear()
+        self.image_label.setText("No image")
     
     def init_ui(self):
         layout = QFormLayout()
@@ -196,6 +296,26 @@ class CocktailDialog(QDialog):
         self.notes_edit.setMaximumHeight(80)
         layout.addRow("Notes:", self.notes_edit)
         
+        # Image
+        image_layout = QHBoxLayout()
+        self.image_label = QLabel("No image")
+        self.image_label.setFixedSize(200, 200)
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setStyleSheet("border: 1px solid #ccc; background-color: #f5f5f5;")
+        
+        image_buttons_layout = QVBoxLayout()
+        upload_button = QPushButton("Upload Image")
+        upload_button.clicked.connect(self.upload_image)
+        remove_button = QPushButton("Remove Image")
+        remove_button.clicked.connect(self.remove_image)
+        image_buttons_layout.addWidget(upload_button)
+        image_buttons_layout.addWidget(remove_button)
+        image_buttons_layout.addStretch()
+        
+        image_layout.addWidget(self.image_label)
+        image_layout.addLayout(image_buttons_layout)
+        layout.addRow("Image:", image_layout)
+        
         # Prep Time and Difficulty
         meta_layout = QHBoxLayout()
         self.prep_time_edit = QLineEdit(self.data.get('Prep_Time', ''))
@@ -260,6 +380,7 @@ class CocktailDialog(QDialog):
             'Brand1': self.brand1_edit.text().strip(),
             'Base_spirit_2': self.base_spirit2_combo.currentText().strip(),
             'Type2': self.type2_edit.text().strip(),
+            'image_path': self.image_path,
             'Brand2': self.brand2_edit.text().strip(),
             'Citrus': self.citrus_edit.text().strip(),
             'Garnish': self.garnish_edit.text().strip(),
@@ -496,10 +617,25 @@ class CocktailTab(QWidget):
         self.details_panel.setWidgetResizable(True)
         self.details_panel.setMaximumWidth(400)
         self.details_panel.setHidden(True)
+        
+        # Create a container widget for details panel
+        details_container = QWidget()
+        details_layout = QVBoxLayout(details_container)
+        
+        # Cocktail image label
+        self.cocktail_image_label = QLabel()
+        self.cocktail_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cocktail_image_label.setStyleSheet("border: none;")
+        self.cocktail_image_label.hide()
+        details_layout.addWidget(self.cocktail_image_label)
+        
+        # Text label
         self.details_label = QLabel("Select an item to view details")
         self.details_label.setWordWrap(True)
         self.details_label.setStyleSheet("padding: 10px;")
-        self.details_panel.setWidget(self.details_label)
+        details_layout.addWidget(self.details_label)
+        
+        self.details_panel.setWidget(details_container)
         self.splitter.addWidget(self.details_panel)
         
         # Set initial splitter sizes (table takes all space initially)
@@ -676,10 +812,31 @@ class CocktailTab(QWidget):
                 details_text += f"<b>Difficulty:</b> {item.get('Difficulty', '')}/5"
                 
                 self.details_label.setText(details_text)
+                
+                # Display cocktail image if available
+                image_path = item.get('image_path', '')
+                if image_path and os.path.exists(image_path):
+                    pixmap = QPixmap(image_path)
+                    if not pixmap.isNull():
+                        scaled_pixmap = pixmap.scaled(250, 250, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                        self.cocktail_image_label.setPixmap(scaled_pixmap)
+                        self.cocktail_image_label.show()
+                    else:
+                        self.cocktail_image_label.clear()
+                        self.cocktail_image_label.setText("🍹 No image")
+                        self.cocktail_image_label.show()
+                else:
+                    self.cocktail_image_label.clear()
+                    self.cocktail_image_label.setText("🍹 No image")
+                    self.cocktail_image_label.show()
             else:
                 self.details_label.setText("Error loading details")
+                self.cocktail_image_label.clear()
+                self.cocktail_image_label.hide()
         except Exception as e:
             self.details_label.setText("Error loading details")
+            self.cocktail_image_label.clear()
+            self.cocktail_image_label.hide()
     
     def apply_filter(self, filter_type):
         """Apply filter to the table data."""
@@ -759,6 +916,28 @@ class CocktailTab(QWidget):
             self.table.setItem(row, 0, name_item)
             self.table.setItem(row, 1, spirit_item)
             self.table.setItem(row, 2, brand_item)
+            
+            # Add tooltip with cocktail image if available
+            image_path = item.get('image_path', '')
+            tooltip_text = ""
+            if image_path and os.path.exists(image_path):
+                pixmap = QPixmap(image_path)
+                if not pixmap.isNull():
+                    scaled_pixmap = pixmap.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    # Convert pixmap to HTML for tooltip
+                    from PyQt5.QtCore import QByteArray, QBuffer
+                    byte_array = QByteArray()
+                    buffer = QBuffer(byte_array)
+                    buffer.open(QBuffer.OpenModeFlag.WriteOnly)
+                    scaled_pixmap.save(buffer, "PNG")
+                    buffer.close()
+                    image_data = byte_array.toBase64().data().decode()
+                    tooltip_text = f'<img src="data:image/png;base64,{image_data}">'
+            
+            # Apply tooltip to all items in the row
+            if tooltip_text:
+                for table_item in [name_item, spirit_item, brand_item]:
+                    table_item.setToolTip(tooltip_text)
             
             # Color-coded rating badge
             rating_item = QTableWidgetItem(item.get('Rating_overall', ''))

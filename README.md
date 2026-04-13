@@ -140,6 +140,61 @@ cocktail-database/
 - Make sure all Python files are in the same directory
 - Reinstall dependencies: `pip install -r requirements.txt`
 
+## Building an Installer
+
+### Prerequisites
+- Python 3.7 or higher
+- Inno Setup 6 (or later) - Download from https://jrsoftware.org/isdl.php
+
+### Build Instructions
+
+#### Automated Build (Recommended)
+Run one of the following scripts from the project root:
+
+**Windows Batch:**
+```bash
+build_installer.bat
+```
+
+**PowerShell:**
+```powershell
+.\build_installer.ps1
+```
+
+These scripts will:
+1. Install all dependencies from requirements.txt
+2. Build the executable using PyInstaller
+3. Create the installer using Inno Setup
+
+The final installer will be located at: `Output\CocktailDatabaseInstaller.exe`
+
+#### Manual Build
+If you prefer to build manually:
+
+1. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. Build the executable with PyInstaller:
+   ```bash
+   pyinstaller --clean cocktail_database.spec
+   ```
+
+3. Build the installer with Inno Setup:
+   ```bash
+   iscc installer_script.iss
+   ```
+
+The installer will be created in the `Output` folder.
+
+### Distribution
+The generated `CocktailDatabaseInstaller.exe` can be distributed to users. When installed, it will:
+- Install the application to `C:\Program Files\CocktailDatabase` (or user-selected location)
+- Create desktop and Start Menu shortcuts
+- Include all necessary files (database, images, config)
+- Provide uninstall functionality
+
 ## Future Enhancements
 - Export data to CSV
 - Import data from CSV
