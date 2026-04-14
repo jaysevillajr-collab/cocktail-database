@@ -27,7 +27,7 @@ class StarRatingWidget(QWidget):
         self.star_labels = []
         for i in range(5):
             label = QLabel("☆")
-            label.setStyleSheet("font-size: 24px; cursor: pointer;")
+            label.setStyleSheet("font-size: 28px; cursor: pointer;")
             label.mousePressEvent = lambda event, idx=i: self.on_star_click(idx)
             layout.addWidget(label)
             self.star_labels.append(label)
@@ -69,7 +69,9 @@ class CocktailDialog(QDialog):
         self.data = data or {}
         self.setWindowTitle("Add Cocktail" if not data else "Edit Cocktail")
         self.setModal(True)
-        self.setMinimumWidth(500)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
+        self.setMinimumSize(450, 400)
+        self.resize(500, 600)
         self.setAcceptDrops(True)
         self.image_path = self.data.get('image_path', '')
         self.create_image_folders()
@@ -79,6 +81,8 @@ class CocktailDialog(QDialog):
         self.validate_prep_time_input(self.prep_time_edit.text())
         # Add fade-in animation
         self.fade_in()
+        # Adjust font size based on initial window size
+        self.adjust_font_size()
     
     def create_image_folders(self):
         """Create image folders if they don't exist."""
@@ -140,6 +144,29 @@ class CocktailDialog(QDialog):
                         continue
         event.acceptProposedAction()
     
+    def adjust_font_size(self):
+        """Adjust font size based on window size."""
+        width = self.width()
+        height = self.height()
+        # Calculate font size based on window dimensions (min 8pt, max 11pt)
+        base_size = 11
+        if width < 500 or height < 400:
+            base_size = 8
+        elif width < 600 or height < 500:
+            base_size = 9
+        elif width < 700 or height < 600:
+            base_size = 10
+        
+        # Apply font size to all widgets
+        font = self.font()
+        font.setPointSize(base_size)
+        self.setFont(font)
+    
+    def resizeEvent(self, event):
+        """Handle resize event to adjust font size."""
+        super().resizeEvent(event)
+        self.adjust_font_size()
+    
     def load_existing_image(self):
         """Load existing image if available."""
         if self.image_path and os.path.exists(self.image_path):
@@ -197,19 +224,49 @@ class CocktailDialog(QDialog):
     
     def init_ui(self):
         layout = QFormLayout()
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Create a scroll area and widget to hold the form layout
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        scroll_widget = QWidget()
+        scroll_widget.setLayout(layout)
+        scroll_area.setWidget(scroll_widget)
+        
+        # Main layout for the dialog
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(scroll_area)
+        self.setLayout(main_layout)
+        
+        # Required fields section
+        required_label = QLabel("Required Fields")
+        required_label.setStyleSheet("font-weight: bold; color: #667eea;")
+        layout.addRow(required_label)
         
         # Cocktail_Name (required)
         self.name_edit = QLineEdit(self.data.get('Cocktail_Name', ''))
+        self.name_edit.setPlaceholderText("Enter cocktail name")
         layout.addRow("Cocktail Name*:", self.name_edit)
         
         # Ingredients (required)
         self.ingredients_edit = QTextEdit()
         self.ingredients_edit.setPlainText(self.data.get('Ingredients', ''))
-        self.ingredients_edit.setMaximumHeight(100)
+        self.ingredients_edit.setMinimumHeight(120)
+        self.ingredients_edit.setPlaceholderText("Enter ingredients with measurements")
         layout.addRow("Ingredients*:", self.ingredients_edit)
         
-        # Ratings
+        # Ratings section
+        layout.addRow(QLabel(""))  # Spacer
+        ratings_label = QLabel("Ratings")
+        ratings_label.setStyleSheet("font-weight: bold; color: #667eea;")
+        layout.addRow(ratings_label)
+        
         ratings_layout = QVBoxLayout()
+        ratings_layout.setSpacing(5)
         
         jason_layout = QHBoxLayout()
         jason_layout.addWidget(QLabel("Jason:"))
@@ -232,10 +289,17 @@ class CocktailDialog(QDialog):
         overall_layout.addWidget(QLabel(f"({self.data.get('Rating_overall', '0')})"))
         ratings_layout.addLayout(overall_layout)
         
-        layout.addRow("Ratings:", ratings_layout)
+        layout.addRow("", ratings_layout)
+        
+        # Base Spirits section
+        layout.addRow(QLabel(""))  # Spacer
+        spirits_label = QLabel("Base Spirits")
+        spirits_label.setStyleSheet("font-weight: bold; color: #667eea;")
+        layout.addRow(spirits_label)
         
         # Base Spirit 1
         base1_layout = QHBoxLayout()
+        base1_layout.setSpacing(8)
         self.base_spirit1_combo = QComboBox()
         self.base_spirit1_combo.setEditable(True)
         self.base_spirit1_combo.addItems(['Gin', 'Rum', 'Whisky', 'Vodka', 'Tequila', 
@@ -249,17 +313,20 @@ class CocktailDialog(QDialog):
         self.base_spirit1_combo.setCompleter(completer1)
         
         self.type1_edit = QLineEdit(self.data.get('Type1', ''))
+        self.type1_edit.setPlaceholderText("Type")
         self.brand1_edit = QLineEdit(self.data.get('Brand1', ''))
+        self.brand1_edit.setPlaceholderText("Brand")
         base1_layout.addWidget(QLabel("Base:"))
         base1_layout.addWidget(self.base_spirit1_combo)
         base1_layout.addWidget(QLabel("Type:"))
         base1_layout.addWidget(self.type1_edit)
         base1_layout.addWidget(QLabel("Brand:"))
         base1_layout.addWidget(self.brand1_edit)
-        layout.addRow("Base Spirit 1:", base1_layout)
+        layout.addRow("Primary:", base1_layout)
         
         # Base Spirit 2 (optional)
         base2_layout = QHBoxLayout()
+        base2_layout.setSpacing(8)
         self.base_spirit2_combo = QComboBox()
         self.base_spirit2_combo.setEditable(True)
         self.base_spirit2_combo.addItems(['', 'Gin', 'Rum', 'Whisky', 'Vodka', 'Tequila', 
@@ -273,37 +340,78 @@ class CocktailDialog(QDialog):
         self.base_spirit2_combo.setCompleter(completer2)
         
         self.type2_edit = QLineEdit(self.data.get('Type2', ''))
+        self.type2_edit.setPlaceholderText("Type")
         self.brand2_edit = QLineEdit(self.data.get('Brand2', ''))
+        self.brand2_edit.setPlaceholderText("Brand")
         base2_layout.addWidget(QLabel("Base:"))
         base2_layout.addWidget(self.base_spirit2_combo)
         base2_layout.addWidget(QLabel("Type:"))
         base2_layout.addWidget(self.type2_edit)
         base2_layout.addWidget(QLabel("Brand:"))
         base2_layout.addWidget(self.brand2_edit)
-        layout.addRow("Base Spirit 2:", base2_layout)
+        layout.addRow("Secondary:", base2_layout)
+        
+        # Additional Details section
+        layout.addRow(QLabel(""))  # Spacer
+        details_label = QLabel("Additional Details")
+        details_label.setStyleSheet("font-weight: bold; color: #667eea;")
+        layout.addRow(details_label)
         
         # Citrus
         self.citrus_edit = QLineEdit(self.data.get('Citrus', ''))
+        self.citrus_edit.setPlaceholderText("Enter citrus ingredients")
         layout.addRow("Citrus:", self.citrus_edit)
         
         # Garnish
         self.garnish_edit = QLineEdit(self.data.get('Garnish', ''))
+        self.garnish_edit.setPlaceholderText("Enter garnish")
         layout.addRow("Garnish:", self.garnish_edit)
         
         # Notes
         self.notes_edit = QTextEdit()
         self.notes_edit.setPlainText(self.data.get('Notes', ''))
         self.notes_edit.setMaximumHeight(80)
+        self.notes_edit.setPlaceholderText("Enter additional notes")
         layout.addRow("Notes:", self.notes_edit)
+        
+        # Meta section
+        layout.addRow(QLabel(""))  # Spacer
+        meta_label = QLabel("Meta Information")
+        meta_label.setStyleSheet("font-weight: bold; color: #667eea;")
+        layout.addRow(meta_label)
+        
+        # Prep Time and Difficulty
+        meta_layout = QHBoxLayout()
+        meta_layout.setSpacing(10)
+        self.prep_time_edit = QLineEdit(self.data.get('Prep_Time', ''))
+        self.prep_time_edit.setValidator(QIntValidator(0, 999))
+        self.prep_time_edit.setPlaceholderText("Minutes")
+        self.prep_time_edit.textChanged.connect(self.validate_prep_time_input)
+        self.difficulty_combo = QComboBox()
+        self.difficulty_combo.addItems(['', '1', '2', '3', '4', '5'])
+        self.difficulty_combo.setCurrentText(self.data.get('Difficulty', ''))
+        meta_layout.addWidget(QLabel("Prep Time (min):"))
+        meta_layout.addWidget(self.prep_time_edit)
+        meta_layout.addWidget(QLabel("Difficulty (1-5):"))
+        meta_layout.addWidget(self.difficulty_combo)
+        layout.addRow("", meta_layout)
+        
+        # Image section
+        layout.addRow(QLabel(""))  # Spacer
+        image_section_label = QLabel("Image")
+        image_section_label.setStyleSheet("font-weight: bold; color: #667eea;")
+        layout.addRow(image_section_label)
         
         # Image
         image_layout = QHBoxLayout()
+        image_layout.setSpacing(10)
         self.image_label = QLabel("No image")
         self.image_label.setFixedSize(200, 200)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setStyleSheet("border: 1px solid #ccc; background-color: #f5f5f5;")
+        self.image_label.setStyleSheet("border: 1px solid rgba(0, 0, 0, 0.2); background-color: rgba(255, 255, 255, 0.7); border-radius: 10px;")
         
         image_buttons_layout = QVBoxLayout()
+        image_buttons_layout.setSpacing(10)
         upload_button = QPushButton("Upload Image")
         upload_button.clicked.connect(self.upload_image)
         remove_button = QPushButton("Remove Image")
@@ -314,24 +422,12 @@ class CocktailDialog(QDialog):
         
         image_layout.addWidget(self.image_label)
         image_layout.addLayout(image_buttons_layout)
-        layout.addRow("Image:", image_layout)
-        
-        # Prep Time and Difficulty
-        meta_layout = QHBoxLayout()
-        self.prep_time_edit = QLineEdit(self.data.get('Prep_Time', ''))
-        self.prep_time_edit.setValidator(QIntValidator(0, 999))
-        self.prep_time_edit.textChanged.connect(self.validate_prep_time_input)
-        self.difficulty_combo = QComboBox()
-        self.difficulty_combo.addItems(['', '1', '2', '3', '4', '5'])
-        self.difficulty_combo.setCurrentText(self.data.get('Difficulty', ''))
-        meta_layout.addWidget(QLabel("Prep Time (min):"))
-        meta_layout.addWidget(self.prep_time_edit)
-        meta_layout.addWidget(QLabel("Difficulty (1-5):"))
-        meta_layout.addWidget(self.difficulty_combo)
-        layout.addRow("Meta:", meta_layout)
+        layout.addRow("", image_layout)
         
         # Buttons
+        layout.addRow(QLabel(""))  # Spacer
         button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
         self.save_button = QPushButton("Save")
         self.save_button.clicked.connect(self.validate_and_save)
         self.cancel_button = QPushButton("Cancel")
@@ -345,7 +441,7 @@ class CocktailDialog(QDialog):
     def validate_prep_time_input(self, text):
         """Validate prep time input in real-time."""
         if text and not text.isdigit():
-            self.prep_time_edit.setStyleSheet("background-color: #ffcccc;")
+            self.prep_time_edit.setStyleSheet("background-color: rgba(255, 0, 0, 0.2); border: 1px solid rgba(255, 0, 0, 0.4);")
         else:
             self.prep_time_edit.setStyleSheet("")
     
@@ -428,6 +524,21 @@ class CocktailInfoDialog(QDialog):
     
     def init_ui(self):
         layout = QFormLayout()
+        
+        # Create a scroll area and widget to hold the form layout
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        scroll_widget = QWidget()
+        scroll_widget.setLayout(layout)
+        scroll_area.setWidget(scroll_widget)
+        
+        # Main layout for the dialog
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(scroll_area)
+        self.setLayout(main_layout)
         
         # Cocktail Name
         name_label = QLabel(self.data.get('Cocktail_Name', ''))
@@ -529,9 +640,12 @@ class CocktailTab(QWidget):
     def init_ui(self):
         """Initialize the UI components."""
         layout = QVBoxLayout()
+        layout.setSpacing(15)
+        layout.setContentsMargins(10, 10, 10, 10)
         
         # Search bar
         search_layout = QHBoxLayout()
+        search_layout.setSpacing(10)
         search_label = QLabel("Search:")
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Search by name, base spirit, or brand...")
@@ -554,17 +668,22 @@ class CocktailTab(QWidget):
         self.favorites_button.clicked.connect(self.toggle_favorites_filter)
         self.favorites = set()
         self.load_favorites()
+        self.search_by_ingredients_button = QPushButton("🔍 Search by Ingredients")
+        self.search_by_ingredients_button.clicked.connect(self.show_ingredient_search)
         
         button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
         button_layout.addWidget(self.add_button)
         button_layout.addWidget(self.refresh_button)
         button_layout.addWidget(self.split_view_button)
+        button_layout.addWidget(self.search_by_ingredients_button)
         button_layout.addWidget(self.export_button)
         button_layout.addWidget(self.favorites_button)
         button_layout.addStretch()
         
         # Filter chips
         filter_layout = QHBoxLayout()
+        filter_layout.setSpacing(10)
         filter_layout.addWidget(QLabel("Quick Filters:"))
         self.all_filter = QPushButton("All")
         self.all_filter.setCheckable(True)
@@ -625,14 +744,14 @@ class CocktailTab(QWidget):
         # Cocktail image label
         self.cocktail_image_label = QLabel()
         self.cocktail_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.cocktail_image_label.setStyleSheet("border: none;")
+        self.cocktail_image_label.setStyleSheet("border: 1px solid rgba(0, 0, 0, 0.2); border-radius: 10px;")
         self.cocktail_image_label.hide()
         details_layout.addWidget(self.cocktail_image_label)
         
         # Text label
         self.details_label = QLabel("Select an item to view details")
         self.details_label.setWordWrap(True)
-        self.details_label.setStyleSheet("padding: 10px;")
+        self.details_label.setStyleSheet("padding: 15px; background-color: rgba(255, 255, 255, 0.7); color: #1a1a1a; border-radius: 16px; border: 1px solid rgba(0, 0, 0, 0.2);")
         details_layout.addWidget(self.details_label)
         
         self.details_panel.setWidget(details_container)
@@ -659,7 +778,7 @@ class CocktailTab(QWidget):
         # Log display with scroll area
         log_label = QLabel("Recent Actions:")
         self.log_display = QLabel()
-        self.log_display.setStyleSheet("background-color: #f0f0f0; border: 1px solid gray; padding: 5px;")
+        self.log_display.setStyleSheet("background-color: rgba(255, 255, 255, 0.7); border: 1px solid rgba(0, 0, 0, 0.2); padding: 10px; border-radius: 10px;")
         self.log_display.setWordWrap(True)
         self.update_log_display()
         
@@ -739,6 +858,101 @@ class CocktailTab(QWidget):
                 QMessageBox.information(self, "Success", "Data exported successfully")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to export data: {str(e)}")
+    
+    def show_ingredient_search(self):
+        """Show dialog to search cocktails by available ingredients."""
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QListWidget
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Search Cocktails by Ingredients")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(400)
+        
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Instructions
+        instructions = QLabel("Enter ingredients you have (comma-separated):")
+        instructions.setStyleSheet("font-weight: bold; color: #667eea;")
+        layout.addWidget(instructions)
+        
+        # Input field
+        ingredient_input = QLineEdit()
+        ingredient_input.setPlaceholderText("e.g., gin, vermouth, lemon juice")
+        layout.addWidget(ingredient_input)
+        
+        # Search button
+        search_button = QPushButton("Search Cocktails")
+        search_button.clicked.connect(lambda: self.search_by_ingredients(ingredient_input.text(), dialog))
+        layout.addWidget(search_button)
+        
+        dialog.exec_()
+    
+    def search_by_ingredients(self, ingredients_text, dialog):
+        """Search for cocktails that can be made with the given ingredients."""
+        if not ingredients_text.strip():
+            QMessageBox.warning(self, "Warning", "Please enter at least one ingredient")
+            return
+        
+        # Parse ingredients
+        user_ingredients = [ing.strip().lower() for ing in ingredients_text.split(',')]
+        user_ingredients = [ing for ing in user_ingredients if ing]
+        
+        # Get all cocktails
+        all_cocktails = self.db.get_all_cocktails()
+        
+        # Filter cocktails based on ingredients
+        matching_cocktails = []
+        for cocktail in all_cocktails:
+            ingredients = cocktail.get('Ingredients', '').lower()
+            
+            # Check if any of the user's ingredients are in the cocktail's ingredients
+            match_count = 0
+            for user_ing in user_ingredients:
+                if user_ing in ingredients:
+                    match_count += 1
+            
+            # Show cocktails that match at least one ingredient
+            if match_count > 0:
+                matching_cocktails.append({
+                    'cocktail': cocktail,
+                    'match_count': match_count,
+                    'total_user_ingredients': len(user_ingredients)
+                })
+        
+        # Sort by match count (descending)
+        matching_cocktails.sort(key=lambda x: x['match_count'], reverse=True)
+        
+        # Display results
+        dialog.accept()
+        
+        if not matching_cocktails:
+            QMessageBox.information(self, "No Matches", "No cocktails found with those ingredients.")
+            return
+        
+        # Filter the table to show only matching cocktails
+        self.apply_ingredient_filter(matching_cocktails)
+        
+        # Show message with results
+        QMessageBox.information(
+            self, 
+            f"Found {len(matching_cocktails)} Cocktails",
+            f"Found {len(matching_cocktails)} cocktails that match your ingredients.\n"
+            f"Results are sorted by number of matching ingredients."
+        )
+    
+    def apply_ingredient_filter(self, matching_cocktails):
+        """Filter the table to show only matching cocktails."""
+        matching_names = {item['cocktail']['Cocktail_Name'] for item in matching_cocktails}
+        
+        # Hide rows that don't match
+        for row in range(self.table.rowCount()):
+            cocktail_name = self.table.item(row, 0).text()
+            if cocktail_name not in matching_names:
+                self.table.setRowHidden(row, True)
+            else:
+                self.table.setRowHidden(row, False)
     
     def load_favorites(self):
         """Load favorites from JSON file."""

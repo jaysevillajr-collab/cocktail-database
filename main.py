@@ -24,7 +24,7 @@ class DashboardTab(QWidget):
         
         # Title
         title_label = QLabel("📊 Statistics Dashboard")
-        title_label.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 10px;")
+        title_label.setStyleSheet("font-size: 20px; font-weight: bold; margin-bottom: 15px; color: #1a1a1a;")
         main_layout.addWidget(title_label)
         
         # Create scroll areas for each statistics section
@@ -35,11 +35,11 @@ class DashboardTab(QWidget):
         self.alcohol_stats_label = QLabel()
         self.alcohol_stats_label.setWordWrap(True)
         self.alcohol_stats_label.setStyleSheet("""
-            background-color: #f5f5f5; 
-            border: 1px solid #d0d0d0; 
-            border-radius: 8px; 
-            padding: 15px;
-            color: #333333;
+            background-color: rgba(255, 255, 255, 0.7);
+            border: 1px solid rgba(0, 0, 0, 0.2);
+            border-radius: 16px;
+            padding: 20px;
+            color: #1a1a1a;
         """)
         alcohol_scroll.setWidget(self.alcohol_stats_label)
         main_layout.addWidget(alcohol_scroll)
@@ -51,11 +51,11 @@ class DashboardTab(QWidget):
         self.cocktail_stats_label = QLabel()
         self.cocktail_stats_label.setWordWrap(True)
         self.cocktail_stats_label.setStyleSheet("""
-            background-color: #f5f5f5; 
-            border: 1px solid #d0d0d0; 
-            border-radius: 8px; 
-            padding: 15px;
-            color: #333333;
+            background-color: rgba(255, 255, 255, 0.7);
+            border: 1px solid rgba(0, 0, 0, 0.2);
+            border-radius: 16px;
+            padding: 20px;
+            color: #1a1a1a;
         """)
         cocktail_scroll.setWidget(self.cocktail_stats_label)
         main_layout.addWidget(cocktail_scroll)
@@ -64,16 +64,21 @@ class DashboardTab(QWidget):
         self.setLayout(main_layout)
     
     def update_theme(self, dark_mode):
-        """Update dashboard theme based on dark mode."""
-        bg_color = "#2d2d2d" if dark_mode else "#f5f5f5"
-        border_color = "#404040" if dark_mode else "#d0d0d0"
-        text_color = "#e0e0e0" if dark_mode else "#333333"
+        """Update dashboard theme based on dark mode with glassmorphism."""
+        if dark_mode:
+            bg_color = "rgba(0, 0, 0, 0.6)"
+            border_color = "rgba(255, 255, 255, 0.2)"
+            text_color = "#f0f0f0"
+        else:
+            bg_color = "rgba(255, 255, 255, 0.7)"
+            border_color = "rgba(0, 0, 0, 0.2)"
+            text_color = "#1a1a1a"
         
         style = f"""
             background-color: {bg_color}; 
             border: 1px solid {border_color}; 
-            border-radius: 8px; 
-            padding: 15px;
+            border-radius: 16px; 
+            padding: 20px;
             color: {text_color};
         """
         
@@ -141,35 +146,52 @@ class CocktailDatabaseApp(QMainWindow):
     def init_ui(self):
         """Initialize the user interface."""
         self.setWindowTitle("Cocktail Database Manager")
-        self.setGeometry(100, 100, 1200, 800)
+        self.setGeometry(100, 100, 1400, 900)
         
         # Create central widget with tabbed interface
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
         layout = QVBoxLayout(central_widget)
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Header with title and controls
+        header_container = QWidget()
+        header_layout = QHBoxLayout(header_container)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(15)
+        
+        # Title
+        title_label = QLabel("Cocktail Database")
+        title_label.setStyleSheet("font-size: 24px; font-weight: bold;")
+        header_layout.addWidget(title_label)
+        
+        header_layout.addStretch()
         
         # Theme toggle button
-        header_layout = QHBoxLayout()
         self.theme_button = QPushButton("🌙 Dark Mode")
         self.theme_button.clicked.connect(self.toggle_theme)
+        self.theme_button.setFixedHeight(40)
         header_layout.addWidget(self.theme_button)
         
         # Custom theme button
         self.custom_theme_button = QPushButton("🎨 Custom Theme")
         self.custom_theme_button.clicked.connect(self.show_custom_theme_dialog)
+        self.custom_theme_button.setFixedHeight(40)
         header_layout.addWidget(self.custom_theme_button)
         
         # Settings button
         self.settings_button = QPushButton("⚙️ Settings")
         self.settings_button.clicked.connect(self.show_settings_menu)
+        self.settings_button.setFixedHeight(40)
         header_layout.addWidget(self.settings_button)
         
-        header_layout.addStretch()
-        layout.addLayout(header_layout)
+        layout.addWidget(header_container)
         
         # Create tab widget
         self.tab_widget = QTabWidget()
+        self.tab_widget.setDocumentMode(True)
         
         # Tab 1: Dashboard
         self.dashboard_tab = DashboardTab(self.db)
@@ -177,13 +199,13 @@ class CocktailDatabaseApp(QMainWindow):
         
         # Tab 2: Alcohol Inventory
         self.alcohol_tab = AlcoholTab(self.db)
-        self.tab_widget.addTab(self.alcohol_tab, "Alcohol Inventory")
+        self.tab_widget.addTab(self.alcohol_tab, "🍷 Alcohol Inventory")
         
         # Tab 3: Cocktail Recipes
         self.cocktail_tab = CocktailTab(self.db)
-        self.tab_widget.addTab(self.cocktail_tab, "Cocktail Recipes")
+        self.tab_widget.addTab(self.cocktail_tab, "🍹 Cocktail Recipes")
         
-        layout.addWidget(self.tab_widget)
+        layout.addWidget(self.tab_widget, stretch=1)
         
         # Add status bar
         self.status_bar = QStatusBar()
@@ -545,211 +567,377 @@ class CocktailDatabaseApp(QMainWindow):
         self.dashboard_tab.update_theme(self.dark_mode)
     
     def get_light_theme(self):
-        """Get the light theme stylesheet."""
+        """Get the light theme stylesheet with glassmorphism."""
         return """
         QMainWindow {
-            background-color: #f5f5f5;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f093fb, stop:1 #4facfe);
         }
         QWidget {
-            background-color: #f5f5f5;
-            color: #333333;
+            background: transparent;
+            color: white;
             font-family: 'Segoe UI', Arial, sans-serif;
             font-size: 11pt;
         }
         QPushButton {
-            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #6fa8dc, stop:1 #4a90d9);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(102, 126, 234, 0.6), stop:1 rgba(118, 75, 162, 0.6));
+            background-color: rgba(255, 255, 255, 0.4);
             color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 8px 16px;
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            border-radius: 12px;
+            padding: 10px 20px;
             font-weight: bold;
+            min-width: 100px;
         }
         QPushButton:hover {
-            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #5a9cd0, stop:1 #3a80c9);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(102, 126, 234, 0.8), stop:1 rgba(118, 75, 162, 0.8));
+            background-color: rgba(255, 255, 255, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.6);
         }
         QPushButton:pressed {
-            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #4a90d9, stop:1 #2a70b9);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(102, 126, 234, 1.0), stop:1 rgba(118, 75, 162, 1.0));
+            background-color: rgba(255, 255, 255, 0.6);
+        }
+        QPushButton:checked {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(102, 126, 234, 0.9), stop:1 rgba(118, 75, 162, 0.9));
+            background-color: rgba(255, 255, 255, 0.6);
+            border: 2px solid rgba(102, 126, 234, 0.8);
         }
         QTableWidget {
-            background-color: white;
-            alternate-background-color: #f8f8f8;
-            border: 1px solid #d0d0d0;
-            border-radius: 8px;
-            gridline-color: #e0e0e0;
+            background-color: rgba(255, 255, 255, 0.6);
+            alternate-background-color: rgba(255, 255, 255, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            border-radius: 16px;
+            gridline-color: rgba(0, 0, 0, 0.1);
         }
         QTableWidget::item {
-            padding: 5px;
+            padding: 8px;
+            background-color: rgba(255, 255, 255, 0.6);
+            color: #1a1a1a;
+            border-radius: 4px;
         }
         QTableWidget::item:hover {
-            background-color: #e8f4ff;
+            background-color: rgba(102, 126, 234, 0.3);
+            color: #1a1a1a;
         }
         QTableWidget::item:selected {
-            background-color: #6fa8dc;
+            background-color: rgba(102, 126, 234, 0.7);
             color: white;
         }
         QHeaderView::section {
-            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #e8e8e8, stop:1 #d0d0d0);
-            color: #333333;
-            padding: 5px;
+            background-color: rgba(255, 255, 255, 0.7);
+            color: #1a1a1a;
+            padding: 8px;
             border: none;
-            border-bottom: 1px solid #c0c0c0;
-            border-top-left-radius: 8px;
-            border-top-right-radius: 8px;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+            border-top-left-radius: 16px;
+            border-top-right-radius: 16px;
             font-weight: bold;
         }
         QLineEdit {
-            background-color: white;
-            border: 1px solid #c0c0c0;
-            border-radius: 6px;
-            padding: 5px;
+            background-color: rgba(255, 255, 255, 0.7);
+            border: 1px solid rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            padding: 8px;
+            color: #1a1a1a;
         }
         QLineEdit:focus {
-            border: 2px solid #6fa8dc;
+            border: 2px solid rgba(102, 126, 234, 0.8);
+            background-color: rgba(255, 255, 255, 0.85);
+        }
+        QLineEdit:hover {
+            border: 1px solid rgba(102, 126, 234, 0.5);
         }
         QTextEdit {
-            background-color: white;
-            border: 1px solid #c0c0c0;
-            border-radius: 6px;
-            padding: 5px;
+            background-color: rgba(255, 255, 255, 0.7);
+            border: 1px solid rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            padding: 8px;
+            color: #1a1a1a;
+        }
+        QTextEdit:focus {
+            border: 2px solid rgba(102, 126, 234, 0.8);
+            background-color: rgba(255, 255, 255, 0.85);
+        }
+        QTextEdit:hover {
+            border: 1px solid rgba(102, 126, 234, 0.5);
         }
         QComboBox {
-            background-color: white;
-            border: 1px solid #c0c0c0;
-            border-radius: 6px;
-            padding: 5px;
+            background-color: rgba(255, 255, 255, 0.7);
+            border: 1px solid rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            padding: 8px;
+            color: #1a1a1a;
+        }
+        QComboBox QAbstractItemView {
+            background-color: rgba(255, 255, 255, 0.98);
+            border: 1px solid rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            selection-background-color: rgba(102, 126, 234, 0.7);
         }
         QTabWidget::pane {
-            border: 1px solid #d0d0d0;
-            border-radius: 8px;
-            background-color: white;
+            border: 1px solid rgba(0, 0, 0, 0.2);
+            border-radius: 16px;
+            background-color: rgba(255, 255, 255, 0.5);
+            top: -1px;
         }
         QTabBar::tab {
-            background-color: #e8e8e8;
-            color: #333333;
-            padding: 8px 16px;
-            border-top-left-radius: 8px;
-            border-top-right-radius: 8px;
-            margin-right: 2px;
+            background-color: rgba(255, 255, 255, 0.5);
+            color: #1a1a1a;
+            padding: 12px 24px;
+            border-top-left-radius: 12px;
+            border-top-right-radius: 12px;
+            margin-right: 4px;
+            border: 1px solid rgba(0, 0, 0, 0.1);
+            border-bottom: none;
+            min-width: 120px;
+            font-weight: 500;
         }
         QTabBar::tab:selected {
-            background-color: white;
-            color: #6fa8dc;
+            background-color: rgba(255, 255, 255, 0.8);
+            color: #667eea;
             font-weight: bold;
+            border: 1px solid rgba(0, 0, 0, 0.2);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.8);
         }
         QTabBar::tab:hover {
-            background-color: #f0f0f0;
+            background-color: rgba(255, 255, 255, 0.65);
         }
         QDialog {
-            background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f8f9fa, stop:1 #e9ecef);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(240, 147, 251, 0.3), stop:0.5 rgba(245, 87, 108, 0.3), stop:1 rgba(79, 172, 254, 0.3));
+            background-color: rgba(255, 255, 255, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            border-radius: 16px;
+            font-size: 9pt;
         }
         QLabel {
-            color: #333333;
+            color: white;
+        }
+        QScrollArea {
+            border: none;
+            background-color: transparent;
+        }
+        QScrollBar:vertical {
+            border: none;
+            background: rgba(255, 255, 255, 0.1);
+            width: 12px;
+            border-radius: 6px;
+        }
+        QScrollBar::handle:vertical {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f093fb, stop:1 #f5576c);
+            min-height: 20px;
+            border-radius: 6px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f5576c, stop:1 #4facfe);
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            border: none;
+            background: none;
+        }
+        QScrollBar:horizontal {
+            border: none;
+            background: rgba(255, 255, 255, 0.1);
+            height: 12px;
+            border-radius: 6px;
+        }
+        QScrollBar::handle:horizontal {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #f093fb, stop:1 #f5576c);
+            min-width: 20px;
+            border-radius: 6px;
+        }
+        QScrollBar::handle:horizontal:hover {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #f5576c, stop:1 #4facfe);
+        }
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+            border: none;
+            background: none;
         }
         """
     
     def get_dark_theme(self):
-        """Get the dark theme stylesheet."""
+        """Get the dark theme stylesheet with glassmorphism."""
         return """
         QMainWindow {
-            background-color: #1e1e1e;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1a1a2e, stop:1 #16213e);
         }
         QWidget {
-            background-color: #1e1e1e;
-            color: #e0e0e0;
+            background: transparent;
+            color: #f0f0f0;
             font-family: 'Segoe UI', Arial, sans-serif;
             font-size: 11pt;
         }
         QPushButton {
-            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #4a90d9, stop:1 #2a70b9);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(102, 126, 234, 0.7), stop:1 rgba(118, 75, 162, 0.7));
+            background-color: rgba(0, 0, 0, 0.5);
             color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 8px 16px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 12px;
+            padding: 10px 20px;
             font-weight: bold;
+            min-width: 100px;
         }
         QPushButton:hover {
-            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #5aa0e9, stop:1 #3a80c9);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(102, 126, 234, 0.9), stop:1 rgba(118, 75, 162, 0.9));
+            background-color: rgba(0, 0, 0, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.5);
         }
         QPushButton:pressed {
-            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3a80c9, stop:1 #1a60a9);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(102, 126, 234, 1.0), stop:1 rgba(118, 75, 162, 1.0));
+            background-color: rgba(0, 0, 0, 0.7);
+        }
+        QPushButton:checked {
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(102, 126, 234, 1.0), stop:1 rgba(118, 75, 162, 1.0));
+            background-color: rgba(0, 0, 0, 0.7);
+            border: 2px solid rgba(102, 126, 234, 0.9);
         }
         QTableWidget {
-            background-color: #2d2d2d;
-            alternate-background-color: #383838;
-            border: 1px solid #404040;
-            border-radius: 8px;
-            gridline-color: #404040;
+            background-color: rgba(0, 0, 0, 0.5);
+            alternate-background-color: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 16px;
+            gridline-color: rgba(255, 255, 255, 0.1);
         }
         QTableWidget::item {
-            padding: 5px;
+            padding: 8px;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: #f0f0f0;
+            border-radius: 4px;
         }
         QTableWidget::item:hover {
-            background-color: #3d4d5d;
+            background-color: rgba(102, 126, 234, 0.4);
+            color: #f0f0f0;
         }
         QTableWidget::item:selected {
-            background-color: #4a90d9;
+            background-color: rgba(102, 126, 234, 0.8);
             color: white;
         }
         QHeaderView::section {
-            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #383838, stop:1 #282828);
-            color: #e0e0e0;
-            padding: 5px;
+            background-color: rgba(0, 0, 0, 0.6);
+            color: #f0f0f0;
+            padding: 8px;
             border: none;
-            border-bottom: 1px solid #404040;
-            border-top-left-radius: 8px;
-            border-top-right-radius: 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+            border-top-left-radius: 16px;
+            border-top-right-radius: 16px;
             font-weight: bold;
         }
         QLineEdit {
-            background-color: #2d2d2d;
-            border: 1px solid #505050;
-            border-radius: 6px;
-            padding: 5px;
-            color: #e0e0e0;
+            background-color: rgba(0, 0, 0, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            padding: 8px;
+            color: #f0f0f0;
         }
         QLineEdit:focus {
-            border: 2px solid #4a90d9;
+            border: 2px solid rgba(102, 126, 234, 0.9);
+            background-color: rgba(0, 0, 0, 0.75);
+        }
+        QLineEdit:hover {
+            border: 1px solid rgba(102, 126, 234, 0.6);
         }
         QTextEdit {
-            background-color: #2d2d2d;
-            border: 1px solid #505050;
-            border-radius: 6px;
-            padding: 5px;
-            color: #e0e0e0;
+            background-color: rgba(0, 0, 0, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            padding: 8px;
+            color: #f0f0f0;
+        }
+        QTextEdit:focus {
+            border: 2px solid rgba(102, 126, 234, 0.9);
+            background-color: rgba(0, 0, 0, 0.75);
+        }
+        QTextEdit:hover {
+            border: 1px solid rgba(102, 126, 234, 0.6);
         }
         QComboBox {
-            background-color: #2d2d2d;
-            border: 1px solid #505050;
-            border-radius: 6px;
-            padding: 5px;
-            color: #e0e0e0;
+            background-color: rgba(0, 0, 0, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            padding: 8px;
+            color: #f0f0f0;
+        }
+        QComboBox QAbstractItemView {
+            background-color: rgba(30, 30, 46, 0.98);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 10px;
+            selection-background-color: rgba(102, 126, 234, 0.8);
         }
         QTabWidget::pane {
-            border: 1px solid #404040;
-            border-radius: 8px;
-            background-color: #2d2d2d;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 16px;
+            background-color: rgba(0, 0, 0, 0.5);
+            top: -1px;
         }
         QTabBar::tab {
-            background-color: #383838;
-            color: #e0e0e0;
-            padding: 8px 16px;
-            border-top-left-radius: 8px;
-            border-top-right-radius: 8px;
-            margin-right: 2px;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: #f0f0f0;
+            padding: 12px 24px;
+            border-top-left-radius: 12px;
+            border-top-right-radius: 12px;
+            margin-right: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-bottom: none;
+            min-width: 120px;
+            font-weight: 500;
         }
         QTabBar::tab:selected {
-            background-color: #2d2d2d;
-            color: #4a90d9;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: #667eea;
             font-weight: bold;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-bottom: 1px solid rgba(0, 0, 0, 0.7);
         }
         QTabBar::tab:hover {
-            background-color: #404040;
+            background-color: rgba(0, 0, 0, 0.6);
         }
         QDialog {
-            background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #252525, stop:1 #1e1e1e);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgba(26, 26, 46, 0.4), stop:1 rgba(22, 33, 62, 0.4));
+            background-color: rgba(0, 0, 0, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 16px;
         }
         QLabel {
-            color: #e0e0e0;
+            color: #f0f0f0;
+        }
+        QScrollArea {
+            border: none;
+            background-color: transparent;
+        }
+        QScrollBar:vertical {
+            border: none;
+            background: rgba(0, 0, 0, 0.3);
+            width: 12px;
+            border-radius: 6px;
+        }
+        QScrollBar::handle:vertical {
+            background: rgba(102, 126, 234, 0.6);
+            min-height: 20px;
+            border-radius: 6px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background: rgba(102, 126, 234, 0.8);
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            border: none;
+            background: none;
+        }
+        QScrollBar:horizontal {
+            border: none;
+            background: rgba(0, 0, 0, 0.3);
+            height: 12px;
+            border-radius: 6px;
+        }
+        QScrollBar::handle:horizontal {
+            background: rgba(102, 126, 234, 0.6);
+            min-width: 20px;
+            border-radius: 6px;
+        }
+        QScrollBar::handle:horizontal:hover {
+            background: rgba(102, 126, 234, 0.8);
+        }
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+            border: none;
+            background: none;
         }
         """
 

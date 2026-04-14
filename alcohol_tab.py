@@ -18,7 +18,9 @@ class AlcoholDialog(QDialog):
         self.data = data or {}
         self.setWindowTitle("Add Alcohol" if not data else "Edit Alcohol")
         self.setModal(True)
-        self.setMinimumWidth(500)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
+        self.setMinimumSize(450, 400)
+        self.resize(500, 550)
         self.setAcceptDrops(True)
         self.image_path = self.data.get('image_path', '')
         self.create_image_folders()
@@ -29,6 +31,8 @@ class AlcoholDialog(QDialog):
         self.validate_price_input(self.price_edit.text())
         # Add fade-in animation
         self.fade_in()
+        # Adjust font size based on initial window size
+        self.adjust_font_size()
     
     def create_image_folders(self):
         """Create image folders if they don't exist."""
@@ -94,11 +98,58 @@ class AlcoholDialog(QDialog):
                         continue
         event.acceptProposedAction()
     
+    def adjust_font_size(self):
+        """Adjust font size based on window size."""
+        width = self.width()
+        height = self.height()
+        # Calculate font size based on window dimensions (min 8pt, max 11pt)
+        base_size = 11
+        if width < 500 or height < 400:
+            base_size = 8
+        elif width < 600 or height < 500:
+            base_size = 9
+        elif width < 700 or height < 600:
+            base_size = 10
+        
+        # Apply font size to all widgets
+        font = self.font()
+        font.setPointSize(base_size)
+        self.setFont(font)
+    
+    def resizeEvent(self, event):
+        """Handle resize event to adjust font size."""
+        super().resizeEvent(event)
+        self.adjust_font_size()
+    
     def init_ui(self):
+        """Initialize the UI components."""
         layout = QFormLayout()
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Create a scroll area and widget to hold the form layout
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        scroll_widget = QWidget()
+        scroll_widget.setLayout(layout)
+        scroll_area.setWidget(scroll_widget)
+        
+        # Main layout for the dialog
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(scroll_area)
+        self.setLayout(main_layout)
+        
+        # Required fields section
+        required_label = QLabel("Required Fields")
+        required_label.setStyleSheet("font-weight: bold; color: #667eea;")
+        layout.addRow(required_label)
         
         # Brand (required)
         self.brand_edit = QLineEdit(self.data.get('Brand', ''))
+        self.brand_edit.setPlaceholderText("Enter brand name")
         layout.addRow("Brand*:", self.brand_edit)
         
         # Base_Liquor (required)
@@ -118,16 +169,25 @@ class AlcoholDialog(QDialog):
         
         # Type (required)
         self.type_edit = QLineEdit(self.data.get('Type', ''))
+        self.type_edit.setPlaceholderText("Enter type (e.g., London Dry, Aged Rum)")
         layout.addRow("Type*:", self.type_edit)
+        
+        # Optional fields section
+        layout.addRow(QLabel(""))  # Spacer
+        optional_label = QLabel("Optional Fields")
+        optional_label.setStyleSheet("font-weight: bold; color: #667eea;")
+        layout.addRow(optional_label)
         
         # ABV (optional)
         self.abv_edit = QLineEdit(self.data.get('ABV', ''))
         self.abv_edit.setValidator(QDoubleValidator(0.0, 100.0, 2))
+        self.abv_edit.setPlaceholderText("0.0 - 100.0")
         self.abv_edit.textChanged.connect(self.validate_abv_input)
-        layout.addRow("ABV:", self.abv_edit)
+        layout.addRow("ABV (%):", self.abv_edit)
         
         # Country (optional)
         self.country_edit = QLineEdit(self.data.get('Country', ''))
+        self.country_edit.setPlaceholderText("Enter country of origin")
         layout.addRow("Country:", self.country_edit)
         
         # Price (optional)
@@ -138,10 +198,12 @@ class AlcoholDialog(QDialog):
         
         # Taste (optional)
         self.taste_edit = QLineEdit(self.data.get('Taste', ''))
+        self.taste_edit.setPlaceholderText("Enter tasting notes")
         layout.addRow("Taste:", self.taste_edit)
         
         # Substitute (optional)
         self.substitute_edit = QLineEdit(self.data.get('Substitute', ''))
+        self.substitute_edit.setPlaceholderText("Enter alternative brands")
         layout.addRow("Substitute:", self.substitute_edit)
         
         # Availability (optional)
@@ -150,26 +212,35 @@ class AlcoholDialog(QDialog):
         self.availability_combo.setCurrentText(self.data.get('Availability', 'Available'))
         layout.addRow("Availability:", self.availability_combo)
         
+        # Image section
+        layout.addRow(QLabel(""))  # Spacer
+        image_label = QLabel("Image")
+        image_label.setStyleSheet("font-weight: bold; color: #667eea;")
+        layout.addRow(image_label)
+        
+        # Image preview (move to top of image section)
+        self.image_label = QLabel()
+        self.image_label.setFixedSize(150, 150)
+        self.image_label.setStyleSheet("border: 1px solid rgba(0, 0, 0, 0.2); background-color: rgba(255, 255, 255, 0.7); border-radius: 10px;")
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setText("No image")
+        layout.addRow("Preview:", self.image_label)
+        
         # Image upload
         image_layout = QHBoxLayout()
+        image_layout.setSpacing(10)
         self.upload_button = QPushButton("Upload Image")
         self.upload_button.clicked.connect(self.upload_image)
         self.remove_image_button = QPushButton("Remove Image")
         self.remove_image_button.clicked.connect(self.remove_image)
         image_layout.addWidget(self.upload_button)
         image_layout.addWidget(self.remove_image_button)
-        layout.addRow("Image:", image_layout)
-        
-        # Image preview
-        self.image_label = QLabel()
-        self.image_label.setFixedSize(200, 200)
-        self.image_label.setStyleSheet("border: 1px solid gray; background-color: #f0f0f0;")
-        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setText("No image")
-        layout.addRow("Preview:", self.image_label)
+        layout.addRow("Actions:", image_layout)
         
         # Buttons
+        layout.addRow(QLabel(""))  # Spacer
         button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
         self.save_button = QPushButton("Save")
         self.save_button.clicked.connect(self.validate_and_save)
         self.cancel_button = QPushButton("Cancel")
@@ -183,14 +254,14 @@ class AlcoholDialog(QDialog):
     def validate_abv_input(self, text):
         """Validate ABV input in real-time."""
         if text and not text.replace('.', '').isdigit():
-            self.abv_edit.setStyleSheet("background-color: #ffcccc;")
+            self.abv_edit.setStyleSheet("background-color: rgba(255, 0, 0, 0.2); border: 1px solid rgba(255, 0, 0, 0.4);")
         else:
             self.abv_edit.setStyleSheet("")
     
     def validate_price_input(self, text):
         """Validate Price input in real-time."""
         if text and not (text.startswith('$') or text.replace('.', '').replace(',', '').isdigit()):
-            self.price_edit.setStyleSheet("background-color: #ffcccc;")
+            self.price_edit.setStyleSheet("background-color: rgba(255, 0, 0, 0.2); border: 1px solid rgba(255, 0, 0, 0.4);")
         else:
             self.price_edit.setStyleSheet("")
     
@@ -331,6 +402,21 @@ class AlcoholInfoDialog(QDialog):
     def init_ui(self):
         layout = QFormLayout()
         
+        # Create a scroll area and widget to hold the form layout
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        scroll_widget = QWidget()
+        scroll_widget.setLayout(layout)
+        scroll_area.setWidget(scroll_widget)
+        
+        # Main layout for the dialog
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(scroll_area)
+        self.setLayout(main_layout)
+        
         # Brand
         brand_label = QLabel(self.data.get('Brand', ''))
         layout.addRow("Brand:", brand_label)
@@ -370,7 +456,7 @@ class AlcoholInfoDialog(QDialog):
         # Image preview
         self.image_label = QLabel()
         self.image_label.setFixedSize(200, 200)
-        self.image_label.setStyleSheet("border: 1px solid gray; background-color: #f0f0f0;")
+        self.image_label.setStyleSheet("border: 1px solid rgba(0, 0, 0, 0.2); background-color: rgba(255, 255, 255, 0.7); border-radius: 10px;")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setText("No image")
         layout.addRow("Image:", self.image_label)
@@ -528,12 +614,15 @@ class AlcoholTab(QWidget):
     def init_ui(self):
         """Initialize the UI components."""
         layout = QVBoxLayout()
+        layout.setSpacing(15)
+        layout.setContentsMargins(10, 10, 10, 10)
         
         # Search bar
         search_layout = QHBoxLayout()
+        search_layout.setSpacing(10)
         search_label = QLabel("Search:")
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("Search by any field...")
+        self.search_edit.setPlaceholderText("Search by brand, base liquor, type, country...")
         self.search_edit.textChanged.connect(self.filter_data)
         search_layout.addWidget(search_label)
         search_layout.addWidget(self.search_edit)
@@ -558,6 +647,7 @@ class AlcoholTab(QWidget):
         self.load_favorites()
         
         button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
         button_layout.addWidget(self.add_button)
         button_layout.addWidget(self.refresh_button)
         button_layout.addWidget(self.split_view_button)
@@ -568,6 +658,7 @@ class AlcoholTab(QWidget):
         
         # Filter chips
         filter_layout = QHBoxLayout()
+        filter_layout.setSpacing(10)
         filter_layout.addWidget(QLabel("Quick Filters:"))
         self.all_filter = QPushButton("All")
         self.all_filter.setCheckable(True)
@@ -642,14 +733,14 @@ class AlcoholTab(QWidget):
         self.flag_label = QLabel()
         self.flag_label.setMaximumSize(180, 120)
         self.flag_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.flag_label.setStyleSheet("border: none;")
+        self.flag_label.setStyleSheet("border: 1px solid rgba(0, 0, 0, 0.2); border-radius: 10px;")
         self.images_layout.addWidget(self.flag_label)
         
         # Alcohol image label
         self.alcohol_image_label = QLabel()
         self.alcohol_image_label.setMaximumSize(180, 120)
         self.alcohol_image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.alcohol_image_label.setStyleSheet("border: none;")
+        self.alcohol_image_label.setStyleSheet("border: 1px solid rgba(0, 0, 0, 0.2); border-radius: 10px;")
         self.images_layout.addWidget(self.alcohol_image_label)
         
         self.details_layout.addWidget(self.images_container)
@@ -657,7 +748,7 @@ class AlcoholTab(QWidget):
         # Text label (with solid background for readability)
         self.details_label = QLabel("Select an item to view details")
         self.details_label.setWordWrap(True)
-        self.details_label.setStyleSheet("padding: 15px; background-color: white; color: #333333; border-radius: 0px;")
+        self.details_label.setStyleSheet("padding: 15px; background-color: rgba(255, 255, 255, 0.7); color: #1a1a1a; border-radius: 16px; border: 1px solid rgba(0, 0, 0, 0.2);")
         self.details_layout.addWidget(self.details_label)
         
         self.details_panel.setWidget(self.details_container)
@@ -698,7 +789,7 @@ class AlcoholTab(QWidget):
         # Log display with scroll area
         log_label = QLabel("Recent Actions:")
         self.log_display = QLabel()
-        self.log_display.setStyleSheet("background-color: #f0f0f0; border: 1px solid gray; padding: 5px;")
+        self.log_display.setStyleSheet("background-color: rgba(255, 255, 255, 0.7); border: 1px solid rgba(0, 0, 0, 0.2); padding: 10px; border-radius: 10px;")
         self.log_display.setWordWrap(True)
         self.update_log_display()
         
@@ -996,7 +1087,7 @@ class AlcoholTab(QWidget):
             # Create thumbnail frame
             frame = QFrame()
             frame.setFrameStyle(QFrame.Shape.Box)
-            frame.setStyleSheet("border: 1px solid #ccc; border-radius: 5px; padding: 5px;")
+            frame.setStyleSheet("border: 1px solid rgba(0, 0, 0, 0.2); border-radius: 12px; padding: 10px; background-color: rgba(255, 255, 255, 0.7);")
             
             frame_layout = QVBoxLayout()
             
@@ -1012,7 +1103,7 @@ class AlcoholTab(QWidget):
             else:
                 image_label.setText("No Image")
                 image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                image_label.setStyleSheet("border: 1px solid #ccc; background-color: #f0f0f0;")
+                image_label.setStyleSheet("border: 1px solid rgba(0, 0, 0, 0.2); background-color: rgba(255, 255, 255, 0.6); border-radius: 8px;")
             
             frame_layout.addWidget(image_label)
             
@@ -1025,7 +1116,7 @@ class AlcoholTab(QWidget):
             # Base liquor label
             liquor_label = QLabel(item.get('Base_Liquor', ''))
             liquor_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            liquor_label.setStyleSheet("font-size: 10px; color: #666;")
+            liquor_label.setStyleSheet("font-size: 10px; color: #888;")
             frame_layout.addWidget(liquor_label)
             
             frame.setLayout(frame_layout)
