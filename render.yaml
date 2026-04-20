@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: cocktail-database-api
+    runtime: python
+    rootDir: web/backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: STORAGE_MODE
+        value: supabase
+      - key: LOCAL_MIRROR_ENABLED
+        value: false
+      - key: LOCAL_MIRROR_BEST_EFFORT
+        value: true
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_DB_URL
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: images

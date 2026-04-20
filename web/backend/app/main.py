@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import uuid
@@ -12,16 +13,19 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from urllib.parse import quote, urlparse
 
 import requests
+import psycopg
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from psycopg.rows import dict_row
 
 from .db import DB_PATH, get_connection
 from .schemas import (
@@ -45,6 +49,7 @@ from .schemas import (
 
 
 app = FastAPI(title="Cocktail Database API", version="0.1.0")
+logger = logging.getLogger(__name__)
 
 if getattr(sys, "frozen", False):
     INSTALL_ROOT = Path(sys.executable).resolve().parents[2]
@@ -84,6 +89,28 @@ WIKIMEDIA_HEADERS = {
 WEB_LOOKUP_HEADERS = {
     "User-Agent": "CocktailDatabase/1.0 (Web hints lookup)",
 }
+
+
+def _parse_bool_env(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "")).strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+STORAGE_MODE = str(os.getenv("STORAGE_MODE", "supabase")).strip().lower() or "supabase"
+LOCAL_MIRROR_ENABLED = _parse_bool_env("LOCAL_MIRROR_ENABLED", True)
+LOCAL_MIRROR_BEST_EFFORT = _parse_bool_env("LOCAL_MIRROR_BEST_EFFORT", True)
+SUPABASE_URL = str(os.getenv("SUPABASE_URL", "")).strip().rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = str(os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")).strip()
+SUPABASE_DB_URL = str(os.getenv("SUPABASE_DB_URL", "")).strip()
+SUPABASE_STORAGE_BUCKET = str(os.getenv("SUPABASE_STORAGE_BUCKET", "images")).strip() or "images"
+USE_SUPABASE = bool(
+    STORAGE_MODE == "supabase"
+    and SUPABASE_URL
+    and SUPABASE_SERVICE_ROLE_KEY
+    and SUPABASE_DB_URL
+)
 
 COUNTRY_TO_ISO2_OVERRIDES = {
     "usa": "us",
@@ -146,6 +173,298 @@ TASTING_COLUMNS = [
 
 TAG_COLUMNS = ["id", "entity_type", "entity_rowid", "tag", "created_at"]
 SAVED_VIEW_COLUMNS = ["id", "name", "payload_json", "created_at"]
+
+
+def _quote_pg(identifier: str) -> str:
+    return '"' + str(identifier).replace('"', '""') + '"'
+
+
+def _pg_columns(columns: List[str]) -> str:
+    return ", ".join(_quote_pg(col) for col in columns)
+
+
+@contextmanager
+def _get_supabase_connection():
+    if not USE_SUPABASE:
+        raise HTTPException(status_code=500, detail="Supabase mode is not configured")
+    conn = psycopg.connect(SUPABASE_DB_URL, prepare_threshold=None, row_factory=dict_row)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _pg_fetch_all(query: str, params: Tuple[Any, ...] = ()) -> List[Dict[str, Any]]:
+    with _get_supabase_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+    return [dict(row) for row in rows]
+
+
+def _pg_fetch_one(query: str, params: Tuple[Any, ...] = ()) -> Dict[str, Any] | None:
+    with _get_supabase_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def _pg_execute(query: str, params: Tuple[Any, ...] = ()) -> int:
+    with _get_supabase_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            rowcount = cur.rowcount or 0
+        conn.commit()
+    return rowcount
+
+
+def _next_pg_id(table_name: str) -> int:
+    row = _pg_fetch_one(f"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM {table_name}")
+    return int(row["next_id"]) if row else 1
+
+
+def _normalize_image_key(path_value: str) -> str:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return ""
+
+    public_prefix = f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/"
+    if SUPABASE_URL and raw.startswith(public_prefix):
+        raw = raw[len(public_prefix):]
+
+    raw = raw.split("?", 1)[0].replace("\\", "/")
+    while raw.startswith("./"):
+        raw = raw[2:]
+    if raw.lower().startswith("images/"):
+        raw = raw[7:]
+    return raw.strip("/")
+
+
+def _to_local_image_path(path_value: str) -> str:
+    key = _normalize_image_key(path_value)
+    if not key:
+        return ""
+    if key.startswith("http://") or key.startswith("https://") or key.startswith("data:"):
+        return key
+    return f"images/{key}"
+
+
+def _resolve_image_path_for_response(path_value: str) -> str:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("http://") or raw.startswith("https://") or raw.startswith("data:"):
+        return raw
+    if USE_SUPABASE:
+        key = _normalize_image_key(raw)
+        if key:
+            return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{key}"
+    return raw
+
+
+def _resolve_image_paths_in_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    item = dict(row)
+    if "image_path" in item:
+        item["image_path"] = _resolve_image_path_for_response(str(item.get("image_path") or ""))
+    return item
+
+
+def _mirror_local(task_name: str, fn) -> None:
+    if not LOCAL_MIRROR_ENABLED:
+        return
+    try:
+        fn()
+    except Exception as exc:
+        if LOCAL_MIRROR_BEST_EFFORT:
+            logger.warning("Local mirror failed for %s: %s", task_name, exc)
+            return
+        raise HTTPException(status_code=500, detail=f"Local mirror failed for {task_name}: {exc}") from exc
+
+
+def _assert_storage_controls_available() -> None:
+    if USE_SUPABASE and not LOCAL_MIRROR_ENABLED:
+        raise HTTPException(
+            status_code=400,
+            detail="Local storage controls are disabled in cloud-only mode. Enable LOCAL_MIRROR_ENABLED to use this endpoint.",
+        )
+
+
+def _mirror_upsert_alcohol_by_brand(previous_brand: str, data: Dict[str, Any]) -> None:
+    with get_connection() as conn:
+        cur = conn.cursor()
+        local_image_path = _to_local_image_path(data.get("image_path", ""))
+        lookup_brand = previous_brand.strip() if previous_brand.strip() else str(data.get("Brand") or "").strip()
+
+        cur.execute(
+            """
+            UPDATE alcohol_inventory
+            SET Brand = ?, Base_Liquor = ?, Type = ?, ABV = ?, Country = ?,
+                Price_NZD_700ml = ?, Taste = ?, Substitute = ?, Availability = ?, image_path = ?
+            WHERE rowid = (
+                SELECT rowid FROM alcohol_inventory WHERE Brand = ? LIMIT 1
+            )
+            """,
+            (
+                data["Brand"],
+                data["Base_Liquor"],
+                data["Type"],
+                data["ABV"],
+                data["Country"],
+                data["Price_NZD_700ml"],
+                data["Taste"],
+                data["Substitute"],
+                data["Availability"],
+                local_image_path,
+                lookup_brand,
+            ),
+        )
+
+        if cur.rowcount == 0:
+            cur.execute(
+                """
+                INSERT INTO alcohol_inventory (
+                    Brand, Base_Liquor, Type, ABV, Country,
+                    Price_NZD_700ml, Taste, Substitute, Availability, image_path
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data["Brand"],
+                    data["Base_Liquor"],
+                    data["Type"],
+                    data["ABV"],
+                    data["Country"],
+                    data["Price_NZD_700ml"],
+                    data["Taste"],
+                    data["Substitute"],
+                    data["Availability"],
+                    local_image_path,
+                ),
+            )
+
+        conn.commit()
+
+
+def _mirror_delete_alcohol_by_brand(brand: str) -> None:
+    if not str(brand or "").strip():
+        return
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            DELETE FROM alcohol_inventory
+            WHERE rowid = (
+                SELECT rowid FROM alcohol_inventory WHERE Brand = ? LIMIT 1
+            )
+            """,
+            (brand.strip(),),
+        )
+        conn.commit()
+
+
+def _mirror_upsert_cocktail_by_name(previous_name: str, data: Dict[str, Any]) -> None:
+    with get_connection() as conn:
+        cur = conn.cursor()
+        local_image_path = _to_local_image_path(data.get("image_path", ""))
+        lookup_name = previous_name.strip() if previous_name.strip() else str(data.get("Cocktail_Name") or "").strip()
+
+        cur.execute(
+            """
+            UPDATE cocktail_notes
+            SET Cocktail_Name = ?, Ingredients = ?, Rating_Jason = ?, Rating_Jaime = ?, Rating_overall = ?,
+                Base_spirit_1 = ?, Type1 = ?, Brand1 = ?, Base_spirit_2 = ?, Type2 = ?, Brand2 = ?,
+                Citrus = ?, Garnish = ?, Notes = ?, DatetimeAdded = ?, Prep_Time = ?, Difficulty = ?, image_path = ?
+            WHERE rowid = (
+                SELECT rowid FROM cocktail_notes WHERE Cocktail_Name = ? LIMIT 1
+            )
+            """,
+            (
+                data["Cocktail_Name"],
+                data["Ingredients"],
+                data["Rating_Jason"],
+                data["Rating_Jaime"],
+                data["Rating_overall"],
+                data["Base_spirit_1"],
+                data["Type1"],
+                data["Brand1"],
+                data["Base_spirit_2"],
+                data["Type2"],
+                data["Brand2"],
+                data["Citrus"],
+                data["Garnish"],
+                data["Notes"],
+                data["DatetimeAdded"],
+                data["Prep_Time"],
+                data["Difficulty"],
+                local_image_path,
+                lookup_name,
+            ),
+        )
+
+        if cur.rowcount == 0:
+            cur.execute(
+                """
+                INSERT INTO cocktail_notes (
+                    Cocktail_Name, Ingredients, Rating_Jason, Rating_Jaime, Rating_overall,
+                    Base_spirit_1, Type1, Brand1, Base_spirit_2, Type2, Brand2,
+                    Citrus, Garnish, Notes, DatetimeAdded, Prep_Time, Difficulty, image_path
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data["Cocktail_Name"],
+                    data["Ingredients"],
+                    data["Rating_Jason"],
+                    data["Rating_Jaime"],
+                    data["Rating_overall"],
+                    data["Base_spirit_1"],
+                    data["Type1"],
+                    data["Brand1"],
+                    data["Base_spirit_2"],
+                    data["Type2"],
+                    data["Brand2"],
+                    data["Citrus"],
+                    data["Garnish"],
+                    data["Notes"],
+                    data["DatetimeAdded"],
+                    data["Prep_Time"],
+                    data["Difficulty"],
+                    local_image_path,
+                ),
+            )
+
+        conn.commit()
+
+
+def _mirror_delete_cocktail_by_name(cocktail_name: str) -> None:
+    if not str(cocktail_name or "").strip():
+        return
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            DELETE FROM cocktail_notes
+            WHERE rowid = (
+                SELECT rowid FROM cocktail_notes WHERE Cocktail_Name = ? LIMIT 1
+            )
+            """,
+            (cocktail_name.strip(),),
+        )
+        conn.commit()
+
+
+def _upload_to_supabase_storage(key: str, content: bytes, content_type: str) -> None:
+    url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{key}"
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": content_type or "application/octet-stream",
+        "x-upsert": "true",
+    }
+    response = requests.post(url, headers=headers, data=content, timeout=60)
+    if not response.ok:
+        raise HTTPException(status_code=502, detail=f"Supabase storage upload failed: {response.text[:300]}")
 
 
 @app.on_event("startup")
@@ -1737,6 +2056,23 @@ def alcohol_image_save_from_url(payload: Dict[str, Any]) -> Dict[str, Any]:
     extension = _infer_extension(image_url, str(response.headers.get("content-type") or ""))
     filename = _build_liquor_filename(brand, alcohol_type, extension)
 
+    if USE_SUPABASE:
+        key = f"liquors/{filename}"
+        _upload_to_supabase_storage(key, response.content, str(response.headers.get("content-type") or "application/octet-stream"))
+
+        def _mirror_image_save() -> None:
+            target_dir = ALLOWED_UPLOAD_CATEGORIES["liquors"]
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target_path = target_dir / filename
+            target_path.write_bytes(response.content)
+
+        _mirror_local("alcohol_image_save_from_url", _mirror_image_save)
+        return {
+            "image_path": f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{key}",
+            "image_key": key,
+            "filename": filename,
+        }
+
     target_dir = ALLOWED_UPLOAD_CATEGORIES["liquors"]
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = target_dir / filename
@@ -1778,6 +2114,19 @@ def upload_image(payload: Dict[str, Any]) -> Dict[str, str]:
 
     if not image_bytes:
         raise HTTPException(status_code=400, detail="Decoded image payload is empty")
+
+    if USE_SUPABASE:
+        key = f"{category}/{safe_filename}"
+        _upload_to_supabase_storage(key, image_bytes, "application/octet-stream")
+
+        def _mirror_uploaded_image() -> None:
+            target_dir = ALLOWED_UPLOAD_CATEGORIES[category]
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target_path = target_dir / safe_filename
+            target_path.write_bytes(image_bytes)
+
+        _mirror_local("image_upload", _mirror_uploaded_image)
+        return {"image_path": f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{key}"}
 
     target_dir = ALLOWED_UPLOAD_CATEGORIES[category]
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -1836,6 +2185,7 @@ def db_path() -> Dict[str, str]:
 
 @app.get("/settings/storage")
 def get_storage_settings() -> Dict[str, Any]:
+    _assert_storage_controls_available()
     db_path_value = DB_PATH.resolve()
     images_path_value = IMAGES_DIR.resolve()
     local_db_path_value = LOCAL_DB_PATH.resolve()
@@ -1861,6 +2211,7 @@ def get_storage_settings() -> Dict[str, Any]:
 
 @app.post("/settings/storage/browse")
 def browse_storage_folder(payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+    _assert_storage_controls_available()
     initial_path = str(payload.get("initial_path") or "").strip()
 
     safe_initial = initial_path or str(REPO_ROOT)
@@ -1901,6 +2252,7 @@ def browse_storage_folder(payload: Dict[str, Any] = Body(default={})) -> Dict[st
 
 @app.post("/settings/storage/mirror-now")
 def mirror_storage_now() -> Dict[str, Any]:
+    _assert_storage_controls_available()
     try:
         _mirror_active_storage_to_local()
     except Exception as exc:
@@ -1916,6 +2268,7 @@ def mirror_storage_now() -> Dict[str, Any]:
 
 @app.post("/settings/storage/preflight")
 def storage_preflight(payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+    _assert_storage_controls_available()
     root_input = str(payload.get("root_path") or "").strip()
     target_root, target_db_path, target_images_path = _resolve_target_paths(root_input)
     _assert_directory_writable(target_root)
@@ -1949,6 +2302,7 @@ def storage_preflight(payload: Dict[str, Any] = Body(default={})) -> Dict[str, A
 
 @app.post("/settings/storage/apply")
 def apply_storage_settings(payload: Dict[str, Any] = Body(default={})) -> Dict[str, Any]:
+    _assert_storage_controls_available()
     root_input = str(payload.get("root_path") or "").strip()
     if not root_input:
         raise HTTPException(status_code=400, detail="root_path is required")
@@ -2023,6 +2377,14 @@ def apply_storage_settings(payload: Dict[str, Any] = Body(default={})) -> Dict[s
 
 @app.get("/meta/counts", response_model=CountsResponse)
 def counts() -> CountsResponse:
+    if USE_SUPABASE:
+        alcohol_row = _pg_fetch_one("SELECT COUNT(*) AS value FROM alcohol_inventory")
+        cocktail_row = _pg_fetch_one("SELECT COUNT(*) AS value FROM cocktail_notes")
+        return CountsResponse(
+            alcohol_inventory=int((alcohol_row or {}).get("value") or 0),
+            cocktail_notes=int((cocktail_row or {}).get("value") or 0),
+        )
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM alcohol_inventory")
@@ -2049,16 +2411,25 @@ def get_flag_by_country(country: str = Query(..., description="Country name from
 
 @app.get("/analytics/cost-insights")
 def analytics_cost_insights() -> Dict[str, Any]:
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT Brand, Base_Liquor, Price_NZD_700ml FROM alcohol_inventory")
-        alcohol_rows = [dict(row) for row in cur.fetchall()]
+    if USE_SUPABASE:
+        alcohol_rows = _pg_fetch_all(
+            f"SELECT {_pg_columns(['Brand', 'Base_Liquor', 'Price_NZD_700ml'])} FROM alcohol_inventory"
+        )
+        cocktail_rows = _pg_fetch_all(
+            f"SELECT {_pg_columns(['Cocktail_Name', 'Ingredients', 'Base_spirit_1', 'Base_spirit_2'])} FROM cocktail_notes"
+        )
+        tasting_rows = _pg_fetch_all("SELECT date, cocktail_name FROM tasting_log")
+    else:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT Brand, Base_Liquor, Price_NZD_700ml FROM alcohol_inventory")
+            alcohol_rows = [dict(row) for row in cur.fetchall()]
 
-        cur.execute("SELECT Cocktail_Name, Brand1, Brand2, Base_spirit_1, Base_spirit_2 FROM cocktail_notes")
-        cocktail_rows = [dict(row) for row in cur.fetchall()]
+            cur.execute("SELECT Cocktail_Name, Ingredients, Base_spirit_1, Base_spirit_2 FROM cocktail_notes")
+            cocktail_rows = [dict(row) for row in cur.fetchall()]
 
-        cur.execute("SELECT date, cocktail_name FROM tasting_log")
-        tasting_rows = [dict(row) for row in cur.fetchall()]
+            cur.execute("SELECT date, cocktail_name FROM tasting_log")
+            tasting_rows = [dict(row) for row in cur.fetchall()]
 
     priced_bottles = []
     brand_price_values: Dict[str, list] = {}
@@ -2174,9 +2545,8 @@ def analytics_cost_insights() -> Dict[str, Any]:
 def analytics_tasting_insights() -> Dict[str, Any]:
     dimensions = ["sweetness", "sourness", "bitterness", "booziness", "body", "aroma", "balance", "finish"]
 
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute(
+    if USE_SUPABASE:
+        tasting_rows = _pg_fetch_all(
             """
             SELECT
                 date,
@@ -2195,10 +2565,35 @@ def analytics_tasting_insights() -> Dict[str, Any]:
             FROM tasting_log
             """
         )
-        tasting_rows = [dict(row) for row in cur.fetchall()]
+        cocktail_rows = _pg_fetch_all(
+            f"SELECT {_pg_columns(['Cocktail_Name'])}, COALESCE({_quote_pg('Base_spirit_1')}, '') AS {_quote_pg('Base_spirit_1')} FROM cocktail_notes"
+        )
+    else:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT
+                    date,
+                    cocktail_name,
+                    COALESCE(rating, '') AS rating,
+                    COALESCE(mood, '') AS mood,
+                    COALESCE(would_make_again, '') AS would_make_again,
+                    COALESCE(sweetness, '') AS sweetness,
+                    COALESCE(sourness, '') AS sourness,
+                    COALESCE(bitterness, '') AS bitterness,
+                    COALESCE(booziness, '') AS booziness,
+                    COALESCE(body, '') AS body,
+                    COALESCE(aroma, '') AS aroma,
+                    COALESCE(balance, '') AS balance,
+                    COALESCE(finish, '') AS finish
+                FROM tasting_log
+                """
+            )
+            tasting_rows = [dict(row) for row in cur.fetchall()]
 
-        cur.execute("SELECT Cocktail_Name, COALESCE(Base_spirit_1, '') AS Base_spirit_1 FROM cocktail_notes")
-        cocktail_rows = [dict(row) for row in cur.fetchall()]
+            cur.execute("SELECT Cocktail_Name, COALESCE(Base_spirit_1, '') AS Base_spirit_1 FROM cocktail_notes")
+            cocktail_rows = [dict(row) for row in cur.fetchall()]
 
     cocktail_to_spirit = {
         str(row.get("Cocktail_Name") or "").strip(): str(row.get("Base_spirit_1") or "").strip() or "Unknown"
@@ -2317,6 +2712,11 @@ def analytics_tasting_insights() -> Dict[str, Any]:
 
 @app.get("/alcohol")
 def list_alcohol(limit: int = Query(200, ge=1, le=500), offset: int = Query(0, ge=0)) -> Dict[str, Any]:
+    if USE_SUPABASE:
+        query = f"SELECT id AS _rowid, {_pg_columns(ALCOHOL_COLUMNS)} FROM alcohol_inventory ORDER BY {_quote_pg('Brand')} LIMIT %s OFFSET %s"
+        rows = _pg_fetch_all(query, (limit, offset))
+        return {"items": [_resolve_image_paths_in_row(row) for row in rows], "limit": limit, "offset": offset}
+
     query = "SELECT rowid AS _rowid, * FROM alcohol_inventory ORDER BY Brand LIMIT ? OFFSET ?"
     with get_connection() as conn:
         cur = conn.cursor()
@@ -2330,6 +2730,28 @@ def create_alcohol(payload: AlcoholWriteRequest) -> Dict[str, Any]:
     data = payload.dict()
     if not data.get("Brand", "").strip():
         raise HTTPException(status_code=400, detail="Brand is required")
+
+    if USE_SUPABASE:
+        row_id = _next_pg_id("alcohol_inventory")
+        data["image_path"] = _normalize_image_key(data.get("image_path", ""))
+
+        cols = ALCOHOL_COLUMNS
+        query = (
+            f"INSERT INTO alcohol_inventory (id, {_pg_columns(cols)}) "
+            f"VALUES (%s, {', '.join(['%s'] * len(cols))})"
+        )
+        _pg_execute(query, tuple([row_id] + [data[col] for col in cols]))
+
+        def _mirror_insert() -> None:
+            _mirror_upsert_alcohol_by_brand("", data)
+
+        _mirror_local("create_alcohol", _mirror_insert)
+
+        row = _pg_fetch_one(
+            f"SELECT id AS _rowid, {_pg_columns(ALCOHOL_COLUMNS)} FROM alcohol_inventory WHERE id = %s",
+            (row_id,),
+        )
+        return {"item": _resolve_image_paths_in_row(row or {})}
 
     with get_connection() as conn:
         cur = conn.cursor()
@@ -2369,6 +2791,34 @@ def update_alcohol(row_id: int, payload: AlcoholWriteRequest) -> Dict[str, Any]:
     if not data.get("Brand", "").strip():
         raise HTTPException(status_code=400, detail="Brand is required")
 
+    if USE_SUPABASE:
+        previous_row = _pg_fetch_one(
+            f"SELECT {_quote_pg('Brand')} FROM alcohol_inventory WHERE id = %s",
+            (row_id,),
+        )
+        if not previous_row:
+            raise HTTPException(status_code=404, detail="Alcohol row not found")
+
+        data["image_path"] = _normalize_image_key(data.get("image_path", ""))
+        assignment = ", ".join(f"{_quote_pg(col)} = %s" for col in ALCOHOL_COLUMNS)
+        rowcount = _pg_execute(
+            f"UPDATE alcohol_inventory SET {assignment} WHERE id = %s",
+            tuple([data[col] for col in ALCOHOL_COLUMNS] + [row_id]),
+        )
+        if rowcount == 0:
+            raise HTTPException(status_code=404, detail="Alcohol row not found")
+
+        def _mirror_update() -> None:
+            _mirror_upsert_alcohol_by_brand(str(previous_row.get("Brand") or ""), data)
+
+        _mirror_local("update_alcohol", _mirror_update)
+
+        row = _pg_fetch_one(
+            f"SELECT id AS _rowid, {_pg_columns(ALCOHOL_COLUMNS)} FROM alcohol_inventory WHERE id = %s",
+            (row_id,),
+        )
+        return {"item": _resolve_image_paths_in_row(row or {})}
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -2404,6 +2854,24 @@ def update_alcohol(row_id: int, payload: AlcoholWriteRequest) -> Dict[str, Any]:
 
 @app.delete("/alcohol/id/{row_id}")
 def delete_alcohol(row_id: int) -> Dict[str, str]:
+    if USE_SUPABASE:
+        previous_row = _pg_fetch_one(
+            f"SELECT {_quote_pg('Brand')} FROM alcohol_inventory WHERE id = %s",
+            (row_id,),
+        )
+        if not previous_row:
+            raise HTTPException(status_code=404, detail="Alcohol row not found")
+
+        rowcount = _pg_execute("DELETE FROM alcohol_inventory WHERE id = %s", (row_id,))
+        if rowcount == 0:
+            raise HTTPException(status_code=404, detail="Alcohol row not found")
+
+        def _mirror_delete() -> None:
+            _mirror_delete_alcohol_by_brand(str(previous_row.get("Brand") or ""))
+
+        _mirror_local("delete_alcohol", _mirror_delete)
+        return {"status": "deleted"}
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM alcohol_inventory WHERE rowid = ?", (row_id,))
@@ -2419,6 +2887,23 @@ def list_tags(
     entity_type: str = Query("", description="Optional entity type filter"),
     entity_rowid: int = Query(0, ge=0, description="Optional entity rowid filter"),
 ) -> TagListResponse:
+    if USE_SUPABASE:
+        clauses = []
+        params: List[Any] = []
+        if entity_type:
+            clauses.append("entity_type = %s")
+            params.append(entity_type)
+        if entity_rowid:
+            clauses.append("entity_rowid = %s")
+            params.append(entity_rowid)
+        where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = _pg_fetch_all(
+            f"SELECT id, entity_type, entity_rowid, tag, created_at FROM tags {where_clause} ORDER BY created_at DESC",
+            tuple(params),
+        )
+        items = [TagItem(**row) for row in rows]
+        return TagListResponse(items=items)
+
     clauses = []
     params = []
     if entity_type:
@@ -2466,6 +2951,27 @@ def create_tag(payload: TagCreateRequest) -> TagItem:
         "created_at": _now_local_iso(),
     }
 
+    if USE_SUPABASE:
+        _pg_execute(
+            "INSERT INTO tags (id, entity_type, entity_rowid, tag, created_at) VALUES (%s, %s, %s, %s, %s)",
+            (item["id"], item["entity_type"], item["entity_rowid"], item["tag"], item["created_at"]),
+        )
+
+        def _mirror_create_tag() -> None:
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO tags (id, entity_type, entity_rowid, tag, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (item["id"], item["entity_type"], item["entity_rowid"], item["tag"], item["created_at"]),
+                )
+                conn.commit()
+
+        _mirror_local("create_tag", _mirror_create_tag)
+        return TagItem(**item)
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -2482,6 +2988,20 @@ def create_tag(payload: TagCreateRequest) -> TagItem:
 
 @app.delete("/tags/{tag_id}")
 def delete_tag(tag_id: str) -> Dict[str, str]:
+    if USE_SUPABASE:
+        rowcount = _pg_execute("DELETE FROM tags WHERE id = %s", (tag_id,))
+        if rowcount == 0:
+            raise HTTPException(status_code=404, detail="Tag not found")
+
+        def _mirror_delete_tag() -> None:
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+                conn.commit()
+
+        _mirror_local("delete_tag", _mirror_delete_tag)
+        return {"status": "deleted"}
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
@@ -2494,6 +3014,27 @@ def delete_tag(tag_id: str) -> Dict[str, str]:
 
 @app.get("/saved-views", response_model=SavedViewListResponse)
 def list_saved_views() -> SavedViewListResponse:
+    if USE_SUPABASE:
+        rows = _pg_fetch_all(
+            """
+            SELECT id, name, payload_json, created_at
+            FROM saved_views
+            ORDER BY created_at DESC
+            """
+        )
+        items = []
+        for row in rows:
+            payload_json = row.get("payload_json") if row.get("payload_json") else "{}"
+            items.append(
+                SavedViewItem(
+                    id=str(row.get("id") or ""),
+                    name=str(row.get("name") or ""),
+                    payload=json.loads(payload_json),
+                    created_at=str(row.get("created_at") or ""),
+                )
+            )
+        return SavedViewListResponse(items=items)
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -2525,6 +3066,27 @@ def create_saved_view(payload: SavedViewCreateRequest) -> SavedViewItem:
     view_id = str(uuid.uuid4())
     created_at = _now_local_iso()
 
+    if USE_SUPABASE:
+        _pg_execute(
+            "INSERT INTO saved_views (id, name, payload_json, created_at) VALUES (%s, %s, %s, %s)",
+            (view_id, payload.name.strip(), json.dumps(payload.payload), created_at),
+        )
+
+        def _mirror_create_saved_view() -> None:
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO saved_views (id, name, payload_json, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (view_id, payload.name.strip(), json.dumps(payload.payload), created_at),
+                )
+                conn.commit()
+
+        _mirror_local("create_saved_view", _mirror_create_saved_view)
+        return SavedViewItem(id=view_id, name=payload.name.strip(), payload=payload.payload, created_at=created_at)
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -2541,6 +3103,20 @@ def create_saved_view(payload: SavedViewCreateRequest) -> SavedViewItem:
 
 @app.delete("/saved-views/{view_id}")
 def delete_saved_view(view_id: str) -> Dict[str, str]:
+    if USE_SUPABASE:
+        rowcount = _pg_execute("DELETE FROM saved_views WHERE id = %s", (view_id,))
+        if rowcount == 0:
+            raise HTTPException(status_code=404, detail="Saved view not found")
+
+        def _mirror_delete_saved_view() -> None:
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM saved_views WHERE id = ?", (view_id,))
+                conn.commit()
+
+        _mirror_local("delete_saved_view", _mirror_delete_saved_view)
+        return {"status": "deleted"}
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM saved_views WHERE id = ?", (view_id,))
@@ -2553,6 +3129,11 @@ def delete_saved_view(view_id: str) -> Dict[str, str]:
 
 @app.get("/cocktails")
 def list_cocktails(limit: int = Query(200, ge=1, le=500), offset: int = Query(0, ge=0)) -> Dict[str, Any]:
+    if USE_SUPABASE:
+        query = f"SELECT id AS _rowid, {_pg_columns(COCKTAIL_COLUMNS)} FROM cocktail_notes ORDER BY {_quote_pg('Cocktail_Name')} LIMIT %s OFFSET %s"
+        rows = _pg_fetch_all(query, (limit, offset))
+        return {"items": [_resolve_image_paths_in_row(row) for row in rows], "limit": limit, "offset": offset}
+
     query = "SELECT rowid AS _rowid, * FROM cocktail_notes ORDER BY Cocktail_Name LIMIT ? OFFSET ?"
     with get_connection() as conn:
         cur = conn.cursor()
@@ -2566,6 +3147,27 @@ def create_cocktail(payload: CocktailWriteRequest) -> Dict[str, Any]:
     data = payload.dict()
     if not data.get("Cocktail_Name", "").strip():
         raise HTTPException(status_code=400, detail="Cocktail_Name is required")
+
+    if USE_SUPABASE:
+        row_id = _next_pg_id("cocktail_notes")
+        data["image_path"] = _normalize_image_key(data.get("image_path", ""))
+        cols = COCKTAIL_COLUMNS
+        query = (
+            f"INSERT INTO cocktail_notes (id, {_pg_columns(cols)}) "
+            f"VALUES (%s, {', '.join(['%s'] * len(cols))})"
+        )
+        _pg_execute(query, tuple([row_id] + [data[col] for col in cols]))
+
+        def _mirror_insert_cocktail() -> None:
+            _mirror_upsert_cocktail_by_name("", data)
+
+        _mirror_local("create_cocktail", _mirror_insert_cocktail)
+
+        row = _pg_fetch_one(
+            f"SELECT id AS _rowid, {_pg_columns(COCKTAIL_COLUMNS)} FROM cocktail_notes WHERE id = %s",
+            (row_id,),
+        )
+        return {"item": _resolve_image_paths_in_row(row or {})}
 
     with get_connection() as conn:
         cur = conn.cursor()
@@ -2614,6 +3216,34 @@ def update_cocktail(row_id: int, payload: CocktailWriteRequest) -> Dict[str, Any
     if not data.get("Cocktail_Name", "").strip():
         raise HTTPException(status_code=400, detail="Cocktail_Name is required")
 
+    if USE_SUPABASE:
+        previous_row = _pg_fetch_one(
+            f"SELECT {_quote_pg('Cocktail_Name')} FROM cocktail_notes WHERE id = %s",
+            (row_id,),
+        )
+        if not previous_row:
+            raise HTTPException(status_code=404, detail="Cocktail row not found")
+
+        data["image_path"] = _normalize_image_key(data.get("image_path", ""))
+        assignment = ", ".join(f"{_quote_pg(col)} = %s" for col in COCKTAIL_COLUMNS)
+        rowcount = _pg_execute(
+            f"UPDATE cocktail_notes SET {assignment} WHERE id = %s",
+            tuple([data[col] for col in COCKTAIL_COLUMNS] + [row_id]),
+        )
+        if rowcount == 0:
+            raise HTTPException(status_code=404, detail="Cocktail row not found")
+
+        def _mirror_update_cocktail() -> None:
+            _mirror_upsert_cocktail_by_name(str(previous_row.get("Cocktail_Name") or ""), data)
+
+        _mirror_local("update_cocktail", _mirror_update_cocktail)
+
+        row = _pg_fetch_one(
+            f"SELECT id AS _rowid, {_pg_columns(COCKTAIL_COLUMNS)} FROM cocktail_notes WHERE id = %s",
+            (row_id,),
+        )
+        return {"item": _resolve_image_paths_in_row(row or {})}
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -2658,6 +3288,24 @@ def update_cocktail(row_id: int, payload: CocktailWriteRequest) -> Dict[str, Any
 
 @app.delete("/cocktails/id/{row_id}")
 def delete_cocktail(row_id: int) -> Dict[str, str]:
+    if USE_SUPABASE:
+        previous_row = _pg_fetch_one(
+            f"SELECT {_quote_pg('Cocktail_Name')} FROM cocktail_notes WHERE id = %s",
+            (row_id,),
+        )
+        if not previous_row:
+            raise HTTPException(status_code=404, detail="Cocktail row not found")
+
+        rowcount = _pg_execute("DELETE FROM cocktail_notes WHERE id = %s", (row_id,))
+        if rowcount == 0:
+            raise HTTPException(status_code=404, detail="Cocktail row not found")
+
+        def _mirror_delete_cocktail() -> None:
+            _mirror_delete_cocktail_by_name(str(previous_row.get("Cocktail_Name") or ""))
+
+        _mirror_local("delete_cocktail", _mirror_delete_cocktail)
+        return {"status": "deleted"}
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM cocktail_notes WHERE rowid = ?", (row_id,))
@@ -2670,6 +3318,15 @@ def delete_cocktail(row_id: int) -> Dict[str, str]:
 
 @app.get("/alcohol/{brand}")
 def get_alcohol(brand: str) -> Dict[str, Any]:
+    if USE_SUPABASE:
+        row = _pg_fetch_one(
+            f"SELECT {_pg_columns(ALCOHOL_COLUMNS)} FROM alcohol_inventory WHERE {_quote_pg('Brand')} = %s",
+            (brand,),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Alcohol not found")
+        return {"item": _resolve_image_paths_in_row(row)}
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("SELECT * FROM alcohol_inventory WHERE Brand = ?", (brand,))
@@ -2681,6 +3338,15 @@ def get_alcohol(brand: str) -> Dict[str, Any]:
 
 @app.get("/cocktails/{name}")
 def get_cocktail(name: str) -> Dict[str, Any]:
+    if USE_SUPABASE:
+        row = _pg_fetch_one(
+            f"SELECT {_pg_columns(COCKTAIL_COLUMNS)} FROM cocktail_notes WHERE {_quote_pg('Cocktail_Name')} = %s",
+            (name,),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Cocktail not found")
+        return {"item": _resolve_image_paths_in_row(row)}
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("SELECT * FROM cocktail_notes WHERE Cocktail_Name = ?", (name,))
@@ -2749,6 +3415,32 @@ def ai_twist_suggestions(payload: TwistRequest) -> TwistResponse:
 
 @app.get("/tasting-logs", response_model=TastingLogListResponse)
 def list_tasting_logs() -> TastingLogListResponse:
+    if USE_SUPABASE:
+        rows = _pg_fetch_all(
+            """
+            SELECT id, date, cocktail_name, COALESCE(rating, '') AS rating,
+                   COALESCE(notes, '') AS notes,
+                   COALESCE(mood, '') AS mood,
+                   COALESCE(occasion, '') AS occasion,
+                   COALESCE(location, '') AS location,
+                   COALESCE(would_make_again, '') AS would_make_again,
+                   COALESCE(change_next_time, '') AS change_next_time,
+                   COALESCE(sweetness, '') AS sweetness,
+                   COALESCE(sourness, '') AS sourness,
+                   COALESCE(bitterness, '') AS bitterness,
+                   COALESCE(booziness, '') AS booziness,
+                   COALESCE(body, '') AS body,
+                   COALESCE(aroma, '') AS aroma,
+                   COALESCE(balance, '') AS balance,
+                   COALESCE(finish, '') AS finish,
+                   created_at
+            FROM tasting_log
+            ORDER BY date DESC, created_at DESC
+            """
+        )
+        items = [TastingLogItem(**row) for row in rows]
+        return TastingLogListResponse(items=items)
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -2852,6 +3544,20 @@ def create_tasting_log(payload: TastingLogCreateRequest) -> TastingLogItem:
 
 @app.delete("/tasting-logs/{item_id}")
 def delete_tasting_log(item_id: str) -> Dict[str, str]:
+    if USE_SUPABASE:
+        rowcount = _pg_execute("DELETE FROM tasting_log WHERE id = %s", (item_id,))
+        if rowcount == 0:
+            raise HTTPException(status_code=404, detail="Tasting log not found")
+
+        def _mirror_delete_tasting() -> None:
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM tasting_log WHERE id = ?", (item_id,))
+                conn.commit()
+
+        _mirror_local("delete_tasting_log", _mirror_delete_tasting)
+        return {"status": "deleted"}
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM tasting_log WHERE id = ?", (item_id,))

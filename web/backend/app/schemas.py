@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from pydantic import BaseModel
+from pydantic import BaseModel, root_validator
 
 
 class HealthResponse(BaseModel):
@@ -12,6 +12,18 @@ class HealthResponse(BaseModel):
 class CountsResponse(BaseModel):
     alcohol_inventory: int
     cocktail_notes: int
+
+    @root_validator(pre=True)
+    def _map_alias_keys(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(values or {})
+        if "alcohol_inventory" not in data and "alcohol_count" in data:
+            data["alcohol_inventory"] = data["alcohol_count"]
+        if "cocktail_notes" not in data and "cocktail_count" in data:
+            data["cocktail_notes"] = data["cocktail_count"]
+        return data
+
+    class Config:
+        allow_population_by_field_name = True
 
 
 class RowPayload(BaseModel):

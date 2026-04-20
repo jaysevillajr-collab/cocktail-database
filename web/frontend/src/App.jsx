@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
-const API_BASE = (import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8002').trim()
+const RAW_API_BASE = (import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? '' : 'http://127.0.0.1:8002')).trim()
+const API_BASE = RAW_API_BASE.replace(/\/+$/, '')
 const APP_VERSION = 'v1.0.0'
 const SAVED_VIEWS_KEY = 'cocktail_web_saved_views_v1'
 const EMPTY_ALCOHOL_FORM = {
