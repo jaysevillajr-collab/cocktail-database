@@ -33,6 +33,14 @@ npm run dev
 
 Open `http://127.0.0.1:5173`.
 
+## Cloud Deployment (Free Tier)
+
+Use the deployment guide at:
+
+- `web/DEPLOYMENT_FREE_TIER.md`
+
+This covers Render (backend) + Cloudflare Pages (frontend) + Supabase (data/images).
+
 ## Build Windows Installer (Web App)
 
 From the project root:
