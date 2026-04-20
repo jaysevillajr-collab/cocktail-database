@@ -2109,8 +2109,11 @@ export default function App() {
   return (
     <div className="page">
       <header className="hero">
-        <h1>Cocktail Database</h1>
+        <p className="hero-kicker">Homebar Workspace</p>
+        <h1>The Brenchley Road Curators</h1>
+        <p className="hero-subtitle">of Lyttelton</p>
         <p>Manage your inventory, recipes, logs, recommendations, and storage settings in one place.</p>
+        <p className="hero-credit">crafted by Jaime Sevilla and Jason Reimer</p>
       </header>
 
       <section className="api-status-row">
