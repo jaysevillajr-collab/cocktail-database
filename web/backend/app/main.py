@@ -270,6 +270,86 @@ def _resolve_image_paths_in_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return item
 
 
+def _format_numeric_score(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    value = float(text)
+    if value.is_integer():
+        return str(int(value))
+    return str(round(value, 1))
+
+
+def _require_score_zero_to_five(raw: Any, field_name: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be numeric") from exc
+    if value < 0 or value > 5:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be between 0 and 5")
+    return _format_numeric_score(value)
+
+
+def _normalize_abv_value(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    return text if "%" in text else f"{text}%"
+
+
+def _normalize_price_value(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    return text if text.startswith("$") else f"${text}"
+
+
+def _normalize_alcohol_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    data["ABV"] = _normalize_abv_value(data.get("ABV", ""))
+    data["Price_NZD_700ml"] = _normalize_price_value(data.get("Price_NZD_700ml", ""))
+    return data
+
+
+def _normalize_cocktail_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    data["Rating_Jason"] = _require_score_zero_to_five(data.get("Rating_Jason", ""), "Rating_Jason")
+    data["Rating_Jaime"] = _require_score_zero_to_five(data.get("Rating_Jaime", ""), "Rating_Jaime")
+    data["Rating_overall"] = _require_score_zero_to_five(data.get("Rating_overall", ""), "Rating_overall")
+    data["Difficulty"] = _require_score_zero_to_five(data.get("Difficulty", ""), "Difficulty")
+    return data
+
+
+def _normalize_twist_difficulty(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    aliases = {
+        "easy": 2.0,
+        "low": 2.0,
+        "medium": 3.0,
+        "moderate": 3.0,
+        "hard": 4.0,
+        "advanced": 4.0,
+        "expert": 5.0,
+    }
+
+    lowered = text.lower()
+    numeric = aliases.get(lowered)
+    if numeric is None:
+        numeric_match = re.search(r"\d+(?:\.\d+)?", text)
+        if numeric_match:
+            numeric = float(numeric_match.group(0))
+
+    if numeric is None:
+        return ""
+
+    clamped = max(0.0, min(5.0, numeric))
+    return f"{_format_numeric_score(clamped)} out of 5"
+
+
 def _mirror_local(task_name: str, fn) -> None:
     if not LOCAL_MIRROR_ENABLED:
         return
@@ -1092,7 +1172,7 @@ def build_local_twist_suggestions(payload: TwistRequest) -> list:
             ],
             "garnish_and_glass": "Express grapefruit peel over coupe, then discard peel.",
             "why_it_works": "The grapefruit-lemon split boosts brightness without becoming sharp, while bitters restore mid-palate depth.",
-            "difficulty": "Easy",
+            "difficulty": "2 out of 5",
             "risk_note": constraint_hint,
             "wild_card": "Mist glass with a tiny spray of saline (3:1 water:salt) for extra snap."
         },
@@ -1111,7 +1191,7 @@ def build_local_twist_suggestions(payload: TwistRequest) -> list:
             ],
             "garnish_and_glass": "Lemon peel plus a slapped herb sprig (mint or thyme) in old fashioned glass.",
             "why_it_works": "Swapping part of the sweetness for fortified wine increases complexity and length while keeping balance.",
-            "difficulty": "Medium",
+            "difficulty": "3 out of 5",
             "risk_note": constraint_hint,
             "wild_card": "Rinse the glass with a peated whisky for a faint smoky frame."
         },
@@ -1130,7 +1210,7 @@ def build_local_twist_suggestions(payload: TwistRequest) -> list:
             ],
             "garnish_and_glass": "Tall highball with citrus wheel and aromatic herb bouquet.",
             "why_it_works": "Lower proof increases drinkability while aperitif and saline keep structure and finish from feeling thin.",
-            "difficulty": "Easy",
+            "difficulty": "2 out of 5",
             "risk_note": "Carbonation can flatten sweetness quickly; taste after 60 seconds and rebalance.",
             "wild_card": "Float 0.17 oz (5 ml) overproof rum or mezcal for a split-aroma nose."
         }
@@ -1229,7 +1309,7 @@ def normalize_twist_suggestions(parsed: Dict[str, Any]) -> list:
                 "method": method_list,
                 "garnish_and_glass": str(item.get("garnish_and_glass") or "").strip(),
                 "why_it_works": str(item.get("why_it_works") or "").strip(),
-                "difficulty": str(item.get("difficulty") or "").strip(),
+                "difficulty": _normalize_twist_difficulty(item.get("difficulty")),
                 "risk_note": str(item.get("risk_note") or "").strip(),
                 "wild_card": str(item.get("wild_card") or "").strip(),
             }
@@ -2730,6 +2810,7 @@ def create_alcohol(payload: AlcoholWriteRequest) -> Dict[str, Any]:
     data = payload.dict()
     if not data.get("Brand", "").strip():
         raise HTTPException(status_code=400, detail="Brand is required")
+    data = _normalize_alcohol_payload(data)
 
     if USE_SUPABASE:
         row_id = _next_pg_id("alcohol_inventory")
@@ -2790,6 +2871,7 @@ def update_alcohol(row_id: int, payload: AlcoholWriteRequest) -> Dict[str, Any]:
     data = payload.dict()
     if not data.get("Brand", "").strip():
         raise HTTPException(status_code=400, detail="Brand is required")
+    data = _normalize_alcohol_payload(data)
 
     if USE_SUPABASE:
         previous_row = _pg_fetch_one(
@@ -3147,6 +3229,7 @@ def create_cocktail(payload: CocktailWriteRequest) -> Dict[str, Any]:
     data = payload.dict()
     if not data.get("Cocktail_Name", "").strip():
         raise HTTPException(status_code=400, detail="Cocktail_Name is required")
+    data = _normalize_cocktail_payload(data)
 
     if USE_SUPABASE:
         row_id = _next_pg_id("cocktail_notes")
@@ -3215,6 +3298,7 @@ def update_cocktail(row_id: int, payload: CocktailWriteRequest) -> Dict[str, Any
     data = payload.dict()
     if not data.get("Cocktail_Name", "").strip():
         raise HTTPException(status_code=400, detail="Cocktail_Name is required")
+    data = _normalize_cocktail_payload(data)
 
     if USE_SUPABASE:
         previous_row = _pg_fetch_one(
@@ -3474,6 +3558,7 @@ def list_tasting_logs() -> TastingLogListResponse:
 @app.post("/tasting-logs", response_model=TastingLogItem)
 def create_tasting_log(payload: TastingLogCreateRequest) -> TastingLogItem:
     date_value = (payload.date or "").strip()
+    rating_value = _require_score_zero_to_five(payload.rating, "rating")
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_value):
         now_time = datetime.now().strftime("%H:%M:%S")
         date_value = f"{date_value}T{now_time}"
@@ -3484,7 +3569,7 @@ def create_tasting_log(payload: TastingLogCreateRequest) -> TastingLogItem:
         "id": str(uuid.uuid4()),
         "date": date_value,
         "cocktail_name": payload.cocktail_name,
-        "rating": payload.rating,
+        "rating": rating_value,
         "notes": payload.notes,
         "mood": payload.mood,
         "occasion": payload.occasion,

@@ -1,9 +1,34 @@
 import { useEffect, useMemo, useState } from 'react'
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  PolarAngleAxis,
+  PolarGrid,
+  PolarRadiusAxis,
+  Radar,
+  RadarChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from 'recharts'
 
 const RAW_API_BASE = (import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? '' : 'http://127.0.0.1:8002')).trim()
 const API_BASE = RAW_API_BASE.replace(/\/+$/, '')
 const APP_VERSION = 'v1.0.0'
 const SAVED_VIEWS_KEY = 'cocktail_web_saved_views_v1'
+const EDIT_UNLOCK_SESSION_KEY = 'cocktail_web_edit_unlock_at_v1'
+const EDIT_ACCESS_PASSWORD = 'knocktwiceonly'
+const EDIT_UNLOCK_MAX_AGE_MS = 60 * 60 * 1000
+const EDIT_LOCKED_MESSAGE = 'Editing is locked. Enter the password in Settings to continue.'
 const EMPTY_ALCOHOL_FORM = {
   Brand: '',
   Base_Liquor: '',
@@ -15,6 +40,87 @@ const EMPTY_ALCOHOL_FORM = {
   Substitute: '',
   Availability: '',
   image_path: ''
+}
+
+function formatShortMonth(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return '-'
+  const parsed = new Date(`${raw}-01T00:00:00`)
+  if (Number.isNaN(parsed.getTime())) return raw
+  return parsed.toLocaleDateString(undefined, { month: 'short' })
+}
+
+const MAX_SCORE = 5
+const FIVE_SCALE_FIELDS = new Set(['Rating_Jason', 'Rating_Jaime', 'Rating_overall', 'Difficulty'])
+
+function normalizeDecimalForTyping(rawValue) {
+  const nextValue = String(rawValue ?? '')
+  if (nextValue === '') return ''
+  if (!/^\d*\.?\d*$/.test(nextValue)) return null
+  if ((nextValue.match(/\./g) || []).length > 1) return null
+  if (nextValue.startsWith('.')) return `0${nextValue}`
+  return nextValue
+}
+
+function normalizeFiveScaleInput(rawValue) {
+  const normalized = normalizeDecimalForTyping(rawValue)
+  if (normalized === null) return null
+  if (normalized === '') return ''
+  const numeric = Number(normalized)
+  if (Number.isNaN(numeric) || numeric < 0 || numeric > MAX_SCORE) return null
+  return normalized
+}
+
+function isValidFiveScaleValue(rawValue) {
+  const text = String(rawValue ?? '').trim()
+  if (!text) return true
+  const numeric = Number(text)
+  return !Number.isNaN(numeric) && numeric >= 0 && numeric <= MAX_SCORE
+}
+
+function formatNumericString(value) {
+  const numeric = Number(value)
+  if (Number.isNaN(numeric)) return String(value || '').trim()
+  return Number.isInteger(numeric) ? String(numeric) : String(Math.round(numeric * 10) / 10)
+}
+
+function normalizeAbvValue(rawValue) {
+  const text = String(rawValue || '').trim()
+  if (!text) return ''
+  return text.includes('%') ? text : `${text}%`
+}
+
+function normalizePriceValue(rawValue) {
+  const text = String(rawValue || '').trim()
+  if (!text) return ''
+  return text.startsWith('$') ? text : `$${text}`
+}
+
+function normalizeDifficultyOutOfFive(rawDifficulty) {
+  const value = String(rawDifficulty || '').trim()
+  if (!value) return ''
+
+  const lowered = value.toLowerCase()
+  const aliases = {
+    easy: 2,
+    low: 2,
+    medium: 3,
+    moderate: 3,
+    hard: 4,
+    advanced: 4,
+    expert: 5
+  }
+
+  let numeric = aliases[lowered]
+  if (numeric == null) {
+    const parsed = Number(value.replace(/[^\d.]/g, ''))
+    if (!Number.isNaN(parsed)) {
+      numeric = Math.max(0, Math.min(MAX_SCORE, parsed))
+    }
+  }
+
+  if (numeric == null) return ''
+  return `${formatNumericString(numeric)} out of 5`
 }
 
 const EMPTY_COST_INSIGHTS = {
@@ -121,6 +227,8 @@ const EMPTY_COCKTAIL_FORM = {
   image_path: ''
 }
 
+const CHART_SWATCH = ['#7a4f24', '#a86f35', '#c48b45', '#d9ab66', '#e9c998', '#f2dec0']
+
 function mapAlcoholRowToForm(row) {
   return {
     Brand: row?.Brand || '',
@@ -178,7 +286,7 @@ function normalizeAiSuggestion(item, index = 0) {
     method,
     garnish_and_glass: item?.garnish_and_glass || '',
     why_it_works: item?.why_it_works || '',
-    difficulty: item?.difficulty || '',
+    difficulty: normalizeDifficultyOutOfFive(item?.difficulty),
     risk_note: item?.risk_note || '',
     wild_card: item?.wild_card || ''
   }
@@ -290,12 +398,97 @@ function formatFileTimestamp(date = new Date()) {
   return `${yyyy}${mm}${dd}-${hh}${mi}${ss}`
 }
 
-function extensionFromImageMime(mimeType) {
-  const normalized = String(mimeType || '').toLowerCase().trim()
-  if (normalized === 'image/jpeg' || normalized === 'image/jpg') return 'jpg'
-  if (normalized === 'image/webp') return 'webp'
-  if (normalized === 'image/gif') return 'gif'
-  return 'png'
+const MAX_EDITOR_IMAGE_BYTES = 5 * 1024 * 1024
+const MAX_EDITOR_IMAGE_DIMENSION = 2400
+
+function loadImageElement(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file)
+    const image = new Image()
+    image.onload = () => {
+      URL.revokeObjectURL(url)
+      resolve(image)
+    }
+    image.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('Failed to decode image file.'))
+    }
+    image.src = url
+  })
+}
+
+function canvasToJpegBlob(canvas, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error('Failed to encode image as JPEG.'))
+        return
+      }
+      resolve(blob)
+    }, 'image/jpeg', quality)
+  })
+}
+
+async function compressImageToUploadJpeg(file, maxBytes = MAX_EDITOR_IMAGE_BYTES) {
+  if (!file || !String(file.type || '').startsWith('image/')) {
+    throw new Error('Please use a valid image file.')
+  }
+
+  const image = await loadImageElement(file)
+  const canvas = document.createElement('canvas')
+  const context = canvas.getContext('2d')
+  if (!context) {
+    throw new Error('Image processing is not supported in this browser.')
+  }
+
+  let width = Number(image.naturalWidth || image.width || 0)
+  let height = Number(image.naturalHeight || image.height || 0)
+  if (!width || !height) {
+    throw new Error('Could not read image dimensions.')
+  }
+
+  const maxDimension = Math.max(width, height)
+  if (maxDimension > MAX_EDITOR_IMAGE_DIMENSION) {
+    const scale = MAX_EDITOR_IMAGE_DIMENSION / maxDimension
+    width = Math.max(1, Math.round(width * scale))
+    height = Math.max(1, Math.round(height * scale))
+  }
+
+  let quality = 0.9
+  let attempt = 0
+  let lastBlob = null
+
+  while (attempt < 14) {
+    canvas.width = width
+    canvas.height = height
+    context.clearRect(0, 0, width, height)
+    context.drawImage(image, 0, 0, width, height)
+
+    const blob = await canvasToJpegBlob(canvas, quality)
+    lastBlob = blob
+
+    if (blob.size <= maxBytes) {
+      const stem = String(file.name || 'image').replace(/\.[^.]+$/, '').replace(/\s+/g, '-').replace(/[^a-zA-Z0-9_-]/g, '') || 'image'
+      return new File([blob], `${stem}.jpg`, {
+        type: 'image/jpeg',
+        lastModified: Date.now()
+      })
+    }
+
+    if (quality > 0.56) {
+      quality = Math.max(0.5, quality - 0.08)
+    } else {
+      width = Math.max(1, Math.round(width * 0.85))
+      height = Math.max(1, Math.round(height * 0.85))
+      quality = 0.86
+    }
+
+    attempt += 1
+  }
+
+  throw new Error(
+    `Could not compress image under 5MB${lastBlob ? ` (current ${(lastBlob.size / (1024 * 1024)).toFixed(1)}MB)` : ''}. Please choose a smaller image.`
+  )
 }
 
 function fileToDataUrl(file) {
@@ -469,7 +662,7 @@ export default function App() {
   const [counts, setCounts] = useState(null)
   const [alcohol, setAlcohol] = useState([])
   const [cocktails, setCocktails] = useState([])
-  const [mainSection, setMainSection] = useState('records')
+  const [mainSection, setMainSection] = useState('library')
   const [activeTab, setActiveTab] = useState('alcohol')
   const [query, setQuery] = useState('')
   const [alcoholBaseLiquorFilter, setAlcoholBaseLiquorFilter] = useState('all')
@@ -526,6 +719,17 @@ export default function App() {
   const [storageApplying, setStorageApplying] = useState(false)
   const [storageMirroring, setStorageMirroring] = useState(false)
   const [backendRestarting, setBackendRestarting] = useState(false)
+  const [editAccessPassword, setEditAccessPassword] = useState('')
+  const [editUnlockTimestamp, setEditUnlockTimestamp] = useState(() => {
+    try {
+      const raw = window.sessionStorage.getItem(EDIT_UNLOCK_SESSION_KEY)
+      const parsed = Number(raw || 0)
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+    } catch (_err) {
+      return 0
+    }
+  })
+  const [lockClockTick, setLockClockTick] = useState(Date.now())
 
   const alcoholImageUrl = useMemo(() => {
     const sourcePath = alcoholEditorMode === 'view' ? selectedAlcohol?.image_path : alcoholForm.image_path
@@ -544,6 +748,48 @@ export default function App() {
     }, 2800)
   }
 
+  const isEditUnlocked = editUnlockTimestamp > 0 && (lockClockTick - editUnlockTimestamp) < EDIT_UNLOCK_MAX_AGE_MS
+  const remainingEditUnlockMs = isEditUnlocked ? Math.max(0, EDIT_UNLOCK_MAX_AGE_MS - (lockClockTick - editUnlockTimestamp)) : 0
+  const remainingEditUnlockMinutes = Math.max(0, Math.ceil(remainingEditUnlockMs / 60000))
+
+  const lockEditAccess = (showNotice = false) => {
+    setEditUnlockTimestamp(0)
+    setLockClockTick(Date.now())
+    setEditAccessPassword('')
+    if (showNotice) {
+      showSuccess('Edit mode locked')
+    }
+  }
+
+  const touchEditAccessActivity = () => {
+    const now = Date.now()
+    setEditUnlockTimestamp(now)
+    setLockClockTick(now)
+  }
+
+  const ensureEditAccess = () => {
+    if (!isEditUnlocked) {
+      lockEditAccess(false)
+      setError(EDIT_LOCKED_MESSAGE)
+      return false
+    }
+    touchEditAccessActivity()
+    return true
+  }
+
+  const withWriteLockIcon = (label) => (isEditUnlocked ? label : `🔒 ${label}`)
+
+  const unlockEditAccess = () => {
+    if (String(editAccessPassword || '').trim() !== EDIT_ACCESS_PASSWORD) {
+      setError('Incorrect password. Enter the password in Settings to unlock edit actions.')
+      return
+    }
+    touchEditAccessActivity()
+    setEditAccessPassword('')
+    setError('')
+    showSuccess('Edit mode unlocked for this session')
+  }
+
   const openConfirm = (title, message, action) => {
     setConfirmDialog({
       open: true,
@@ -556,6 +802,40 @@ export default function App() {
   const closeConfirm = () => {
     setConfirmDialog({ open: false, title: '', message: '', action: null })
   }
+
+  useEffect(() => {
+    try {
+      if (editUnlockTimestamp > 0) {
+        window.sessionStorage.setItem(EDIT_UNLOCK_SESSION_KEY, String(editUnlockTimestamp))
+      } else {
+        window.sessionStorage.removeItem(EDIT_UNLOCK_SESSION_KEY)
+      }
+    } catch (_err) {
+    }
+  }, [editUnlockTimestamp])
+
+  useEffect(() => {
+    if (!isEditUnlocked) return undefined
+    const intervalId = window.setInterval(() => {
+      setLockClockTick(Date.now())
+    }, 30000)
+    return () => window.clearInterval(intervalId)
+  }, [isEditUnlocked])
+
+  useEffect(() => {
+    if (!editUnlockTimestamp) return undefined
+    const elapsed = Date.now() - editUnlockTimestamp
+    const remaining = EDIT_UNLOCK_MAX_AGE_MS - elapsed
+    if (remaining <= 0) {
+      lockEditAccess(false)
+      return undefined
+    }
+    const timeoutId = window.setTimeout(() => {
+      lockEditAccess(false)
+      setError('Edit mode auto-locked after 1 hour of inactivity.')
+    }, remaining)
+    return () => window.clearTimeout(timeoutId)
+  }, [editUnlockTimestamp])
 
   const loadApiData = async (maxAttempts = 3) => {
     const attempts = Number.isFinite(maxAttempts) ? Math.max(1, Math.floor(maxAttempts)) : 3
@@ -744,6 +1024,8 @@ export default function App() {
   }
 
   const applyStorageSettings = async () => {
+    if (!ensureEditAccess()) return
+
     const rootPath = String(storageRootInput || '').trim()
     if (!rootPath) {
       setError('Select a storage root folder first.')
@@ -813,6 +1095,8 @@ export default function App() {
   }
 
   const mirrorStorageNow = async () => {
+    if (!ensureEditAccess()) return
+
     setStorageMirroring(true)
     try {
       const res = await fetch(`${API_BASE}/settings/storage/mirror-now`, {
@@ -1051,15 +1335,13 @@ export default function App() {
       return null
     }
 
-    const normalizedOutOfFive = rawRating > 5 ? (rawRating / 2) : rawRating
-    const clamped = Math.max(0, Math.min(5, normalizedOutOfFive))
+    const clamped = Math.max(0, Math.min(MAX_SCORE, rawRating))
     const roundedScore = Math.round(clamped * 10) / 10
-    const fillPercent = (roundedScore / 5) * 100
-    const maxLabel = rawRating > 5 ? '/10' : '/5'
+    const fillPercent = (roundedScore / MAX_SCORE) * 100
     return {
       roundedScore,
       fillPercent,
-      score: `${rawRating}${maxLabel}`
+      score: `${formatNumericString(clamped)} out of 5`
     }
   }, [selectedTastingLog])
 
@@ -1166,7 +1448,7 @@ export default function App() {
         const baseSpiritBonus = hasBaseSpirit ? 10 : 0
 
         const rating = Number(row.Rating_overall)
-        const ratingBonus = Number.isNaN(rating) ? 0 : Math.max(0, Math.min(10, rating)) * 2
+        const ratingBonus = Number.isNaN(rating) ? 0 : Math.max(0, Math.min(MAX_SCORE, rating)) * 4
 
         const score = Math.round(ingredientCoverage * 70 + ratingBonus + baseSpiritBonus)
 
@@ -1255,6 +1537,74 @@ export default function App() {
         return { month, avg: avg.toFixed(1) }
       })
   }, [tastingLogs])
+
+  const libraryOverviewCards = useMemo(() => {
+    return [
+      { key: 'bottles', label: 'Bottles', value: analyticsSummary.totalAlcohol },
+      { key: 'recipes', label: 'Recipes', value: analyticsSummary.totalCocktails },
+      { key: 'available', label: 'Available Now', value: analyticsSummary.availableAlcoholCount },
+      { key: 'avg-rating', label: 'Avg Cocktail Rating', value: analyticsSummary.avgCocktailRating },
+      { key: 'tastings', label: 'Tasting Entries', value: analyticsSummary.tastingCount },
+      { key: 'make-again', label: 'Would Make Again', value: wouldMakeAgainDisplay }
+    ]
+  }, [analyticsSummary, wouldMakeAgainDisplay])
+
+  const ratingTrendChartData = useMemo(() => {
+    return ratingTrend
+      .map((row) => ({ month: formatShortMonth(row.month), avg: Number(row.avg) }))
+      .filter((row) => !Number.isNaN(row.avg))
+  }, [ratingTrend])
+
+  const difficultyMixChartData = useMemo(() => {
+    return [
+      { name: 'Easy (1-2)', value: analyticsSummary.difficultyBuckets['1-2'] || 0 },
+      { name: 'Medium (3)', value: analyticsSummary.difficultyBuckets['3'] || 0 },
+      { name: 'Advanced (4-5)', value: analyticsSummary.difficultyBuckets['4-5'] || 0 }
+    ].filter((row) => row.value > 0)
+  }, [analyticsSummary])
+
+  const moodBreakdownChartData = useMemo(() => {
+    return (tastingInsights.mood_breakdown || [])
+      .map((row) => ({ name: row.mood || 'Unspecified', value: Number(row.count || 0) }))
+      .filter((row) => row.value > 0)
+  }, [tastingInsights.mood_breakdown])
+
+  const topCocktailsChartData = useMemo(() => {
+    return (tastingInsights.top_cocktails || [])
+      .slice(0, 6)
+      .map((row) => ({ name: String(row.name || '-').slice(0, 18), entries: Number(row.entries || 0) }))
+      .filter((row) => row.entries > 0)
+  }, [tastingInsights.top_cocktails])
+
+  const spiritRatingChartData = useMemo(() => {
+    return (tastingInsights.rating_by_base_spirit || [])
+      .slice(0, 8)
+      .map((row) => ({ name: row.base_spirit || 'Unknown', avg: Number(row.avg_rating || 0) }))
+      .filter((row) => !Number.isNaN(row.avg) && row.avg > 0)
+  }, [tastingInsights.rating_by_base_spirit])
+
+  const flavorProfileChartData = useMemo(() => {
+    return (tastingInsights.flavor_profile_avg || [])
+      .map((row) => ({ dimension: prettyLabel(row.dimension), avg: Number(row.avg || 0) }))
+      .filter((row) => !Number.isNaN(row.avg) && row.avg > 0)
+  }, [tastingInsights.flavor_profile_avg])
+
+  const monthlyCostChartData = useMemo(() => {
+    return (costInsights.tasting_monthly_estimated_cost || [])
+      .slice(-8)
+      .map((row) => ({ month: formatShortMonth(row.month), total: Number(row.total_estimated_cost_nzd || 0) }))
+      .filter((row) => !Number.isNaN(row.total))
+  }, [costInsights.tasting_monthly_estimated_cost])
+
+  const makeAgainChartData = useMemo(() => {
+    const pct = Number(tastingInsights.would_make_again_rate_pct)
+    if (Number.isNaN(pct) || pct < 0) return []
+    const yes = Math.max(0, Math.min(100, pct))
+    return [
+      { name: 'Yes', value: yes },
+      { name: 'No', value: Math.max(0, 100 - yes) }
+    ]
+  }, [tastingInsights.would_make_again_rate_pct])
 
   const tastingCalendarDays = useMemo(() => {
     const year = tastingMonth.getFullYear()
@@ -1354,7 +1704,37 @@ export default function App() {
   }
 
   const updateCocktailFormField = (key, value) => {
+    if (FIVE_SCALE_FIELDS.has(key)) {
+      const normalized = normalizeFiveScaleInput(value)
+      if (normalized === null) return
+      setCocktailForm((prev) => ({ ...prev, [key]: normalized }))
+      return
+    }
     setCocktailForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const updateTastingRatingField = (value) => {
+    const normalized = normalizeFiveScaleInput(value)
+    if (normalized === null) return
+    setTastingForm((prev) => ({ ...prev, rating: normalized }))
+  }
+
+  const updateCocktailMinRatingFilter = (value) => {
+    const normalized = normalizeFiveScaleInput(value)
+    if (normalized === null) return
+    setCocktailMinRatingFilter(normalized)
+  }
+
+  const finalizeAlcoholFormattedField = (key) => {
+    setAlcoholForm((prev) => {
+      if (key === 'ABV') {
+        return { ...prev, ABV: normalizeAbvValue(prev.ABV) }
+      }
+      if (key === 'Price_NZD_700ml') {
+        return { ...prev, Price_NZD_700ml: normalizePriceValue(prev.Price_NZD_700ml) }
+      }
+      return prev
+    })
   }
 
   const resetCocktailForm = () => {
@@ -1364,12 +1744,16 @@ export default function App() {
   }
 
   const startCreateCocktail = () => {
+    if (!ensureEditAccess()) return
+
     setSelectedCocktail(null)
     setCocktailForm({ ...EMPTY_COCKTAIL_FORM, image_path: 'images/cocktails/' })
     setCocktailEditorMode('create')
   }
 
   const startEditCocktail = () => {
+    if (!ensureEditAccess()) return
+
     if (!selectedCocktail?._rowid) {
       setError('Select a cocktail row before updating')
       return
@@ -1471,12 +1855,33 @@ export default function App() {
   }
 
   const saveCocktailForm = async () => {
+    if (!ensureEditAccess()) return
+
     if (!cocktailForm.Cocktail_Name.trim()) {
       setError('Cocktail name is required')
       return
     }
 
+    for (const [key, label] of [
+      ['Rating_Jason', 'Jason rating'],
+      ['Rating_Jaime', 'Jaime rating'],
+      ['Rating_overall', 'Overall rating'],
+      ['Difficulty', 'Difficulty']
+    ]) {
+      if (!isValidFiveScaleValue(cocktailForm[key])) {
+        setError(`${label} must be between 0 and 5 (decimals allowed).`)
+        return
+      }
+    }
+
     try {
+      const payload = {
+        ...cocktailForm,
+        Rating_Jason: formatNumericString(cocktailForm.Rating_Jason || ''),
+        Rating_Jaime: formatNumericString(cocktailForm.Rating_Jaime || ''),
+        Rating_overall: formatNumericString(cocktailForm.Rating_overall || ''),
+        Difficulty: formatNumericString(cocktailForm.Difficulty || '')
+      }
       const hasRowId = Boolean(selectedCocktail?._rowid)
       const url = hasRowId
         ? `${API_BASE}/cocktails/id/${selectedCocktail._rowid}`
@@ -1486,7 +1891,7 @@ export default function App() {
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(cocktailForm)
+        body: JSON.stringify(payload)
       })
 
       if (!res.ok) {
@@ -1523,6 +1928,8 @@ export default function App() {
   }
 
   const deleteSelectedCocktail = async () => {
+    if (!ensureEditAccess()) return
+
     const rowId = selectedCocktail?._rowid
     if (!rowId) return
 
@@ -1531,6 +1938,8 @@ export default function App() {
       'Delete Cocktail',
       `This will permanently delete "${cocktailName}". Continue?`,
       async () => {
+        if (!ensureEditAccess()) return
+
         try {
           const res = await fetch(`${API_BASE}/cocktails/id/${rowId}`, { method: 'DELETE' })
           if (!res.ok) {
@@ -1688,6 +2097,8 @@ export default function App() {
   }
 
   const startCreateAlcohol = () => {
+    if (!ensureEditAccess()) return
+
     setSelectedAlcohol(null)
     setAlcoholForm({ ...EMPTY_ALCOHOL_FORM, image_path: 'images/liquors/' })
     setAlcoholEditorMode('create')
@@ -1697,6 +2108,8 @@ export default function App() {
   }
 
   const startEditAlcohol = () => {
+    if (!ensureEditAccess()) return
+
     if (!selectedAlcohol?._rowid) {
       setError('Select an alcohol row before updating')
       return
@@ -1722,12 +2135,21 @@ export default function App() {
   }
 
   const saveAlcoholForm = async () => {
+    if (!ensureEditAccess()) return
+
     if (!alcoholForm.Brand.trim()) {
       setError('Brand is required for alcohol records')
       return
     }
 
     try {
+      const payload = {
+        ...alcoholForm,
+        ABV: normalizeAbvValue(alcoholForm.ABV),
+        Price_NZD_700ml: normalizePriceValue(alcoholForm.Price_NZD_700ml)
+      }
+      setAlcoholForm(payload)
+
       const hasRowId = Boolean(selectedAlcohol?._rowid)
       const url = hasRowId
         ? `${API_BASE}/alcohol/id/${selectedAlcohol._rowid}`
@@ -1737,7 +2159,7 @@ export default function App() {
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(alcoholForm)
+        body: JSON.stringify(payload)
       })
 
       if (!res.ok) {
@@ -1774,6 +2196,8 @@ export default function App() {
   }
 
   const deleteSelectedAlcohol = async () => {
+    if (!ensureEditAccess()) return
+
     const rowId = selectedAlcohol?._rowid
     if (!rowId) return
 
@@ -1782,6 +2206,8 @@ export default function App() {
       'Delete Alcohol Record',
       `This will permanently delete "${alcoholName}". Continue?`,
       async () => {
+        if (!ensureEditAccess()) return
+
         try {
           const res = await fetch(`${API_BASE}/alcohol/id/${rowId}`, { method: 'DELETE' })
           if (!res.ok) {
@@ -1826,9 +2252,9 @@ export default function App() {
     }
 
     try {
-      const ext = extensionFromImageMime(file.type)
-      const filename = `${slug}-${formatFileTimestamp()}.${ext}`
-      const dataUrl = await fileToDataUrl(file)
+      const compressedFile = await compressImageToUploadJpeg(file)
+      const filename = `${slug}-${formatFileTimestamp()}.jpg`
+      const dataUrl = await fileToDataUrl(compressedFile)
 
       const res = await fetch(`${API_BASE}/image-upload`, {
         method: 'POST',
@@ -1895,8 +2321,40 @@ export default function App() {
     })
   }
 
+  const handleAlcoholImagePickerChange = async (event) => {
+    if (alcoholEditorMode === 'view') return
+
+    const file = event.target?.files?.[0]
+    event.target.value = ''
+    if (!file) return
+
+    await uploadEditorImage({
+      file,
+      category: 'liquors',
+      labelValue: alcoholForm.Brand,
+      labelName: 'Brand',
+      updateField: updateAlcoholFormField
+    })
+  }
+
+  const handleCocktailImagePickerChange = async (event) => {
+    if (cocktailEditorMode === 'view') return
+
+    const file = event.target?.files?.[0]
+    event.target.value = ''
+    if (!file) return
+
+    await uploadEditorImage({
+      file,
+      category: 'cocktails',
+      labelValue: cocktailForm.Cocktail_Name,
+      labelName: 'Cocktail Name',
+      updateField: updateCocktailFormField
+    })
+  }
+
   const handleAlcoholEditorPaste = async (event) => {
-    if (mainSection !== 'records' || activeTab !== 'alcohol' || alcoholEditorMode === 'view') return
+    if (mainSection !== 'library' || activeTab !== 'alcohol' || alcoholEditorMode === 'view') return
 
     const file = clipboardImageFile(event)
     if (!file) return
@@ -1912,7 +2370,7 @@ export default function App() {
   }
 
   const handleCocktailEditorPaste = async (event) => {
-    if (mainSection !== 'records' || activeTab !== 'cocktails' || cocktailEditorMode === 'view') return
+    if (mainSection !== 'library' || activeTab !== 'cocktails' || cocktailEditorMode === 'view') return
 
     const file = clipboardImageFile(event)
     if (!file) return
@@ -1928,8 +2386,14 @@ export default function App() {
   }
 
   const addTastingLog = async () => {
+    if (!ensureEditAccess()) return
+
     const cocktailName = tastingForm.cocktail_name.trim()
     if (!cocktailName || !tastingForm.date) return
+    if (!isValidFiveScaleValue(tastingForm.rating)) {
+      setError('Tasting rating must be between 0 and 5 (decimals allowed).')
+      return
+    }
 
     const datePayload = /^\d{4}-\d{2}-\d{2}$/.test(String(tastingForm.date || '').trim())
       ? `${tastingForm.date}T${new Date().toTimeString().slice(0, 8)}`
@@ -1942,7 +2406,7 @@ export default function App() {
         body: JSON.stringify({
           date: datePayload,
           cocktail_name: cocktailName,
-          rating: tastingForm.rating.trim(),
+          rating: formatNumericString(tastingForm.rating.trim()),
           notes: tastingForm.notes.trim(),
           mood: tastingForm.mood.trim(),
           occasion: tastingForm.occasion.trim(),
@@ -1988,10 +2452,14 @@ export default function App() {
   }
 
   const removeTastingLog = async (id) => {
+    if (!ensureEditAccess()) return
+
     openConfirm(
       'Delete Tasting Entry',
       'This will permanently remove the selected tasting log. Continue?',
       async () => {
+        if (!ensureEditAccess()) return
+
         try {
           const res = await fetch(`${API_BASE}/tasting-logs/${id}`, { method: 'DELETE' })
           if (!res.ok) {
@@ -2108,30 +2576,19 @@ export default function App() {
 
   return (
     <div className="page">
-      <header className="hero">
-        <p className="hero-kicker">Homebar Workspace</p>
+      <header className="hero hero-personal">
+        <p className="hero-kicker">The Art of the Pour, Perfected</p>
         <h1>The Brenchley Road Curators</h1>
         <p className="hero-subtitle">of Lyttelton</p>
-        <p>Manage your inventory, recipes, logs, recommendations, and storage settings in one place.</p>
+        <p>A private ledger for bottles, recipes, and tasting history</p>
         <p className="hero-credit">crafted by Jaime Sevilla and Jason Reimer</p>
+        <p className={`edit-lock-badge ${isEditUnlocked ? 'unlocked' : 'locked'}`}>
+          {isEditUnlocked ? `Edit unlocked · auto-lock in ${remainingEditUnlockMinutes}m` : 'Edit locked'}
+        </p>
       </header>
-
-      <section className="api-status-row">
-        <span className={`api-badge ${apiHealth}`}>{apiHealth.toUpperCase()}</span>
-        <span className="api-version">{APP_VERSION}</span>
-        <span className="api-meta">{API_BASE}</span>
-        <span className="api-message">{apiHealthMessage}</span>
-        <span className="api-last-refresh">Last refreshed: {lastRefreshedAt ? formatDateTime(lastRefreshedAt) : '-'}</span>
-        <button className="tab api-retry" onClick={() => loadApiData()} disabled={loading}>
-          {loading ? 'Retrying...' : 'Retry Connection'}
-        </button>
-      </section>
 
       {error && <p className="error">{error}</p>}
       {successNotice && <p className="success">{successNotice}</p>}
-      {!storageSettings.backup_configured && (
-        <p className="warning">Warning: Backup location is not configured. Configure storage backup in Settings.</p>
-      )}
       {backendRestarting && <p className="loading">Backend restarting... reconnecting automatically.</p>}
       {loading && <p className="loading">Loading data from API...</p>}
 
@@ -2160,46 +2617,52 @@ export default function App() {
       )}
 
       <section className="cards">
-        <article className="card">
-          <h2>Alcohol Records</h2>
-          <p>{counts ? counts.alcohol_inventory : '...'}</p>
+        <article className="card card-overview">
+          <h2>Library Overview</h2>
+          <div className="library-kpi-grid">
+            {libraryOverviewCards.map((card) => (
+              <div key={card.key} className="library-kpi-tile">
+                <span>{card.label}</span>
+                <strong>{card.value}</strong>
+              </div>
+            ))}
+          </div>
         </article>
-        <article className="card">
-          <h2>Cocktail Records</h2>
-          <p>{counts ? counts.cocktail_notes : '...'}</p>
+        <article className="card quick-actions-card">
+          <h2>Quick Actions</h2>
+          <div className="quick-actions-grid">
+            <button className="tab active" onClick={() => { if (!ensureEditAccess()) return; setMainSection('library'); setActiveTab('alcohol'); startCreateAlcohol() }}>{withWriteLockIcon('Add Bottle')}</button>
+            <button className="tab active" onClick={() => { if (!ensureEditAccess()) return; setMainSection('library'); setActiveTab('cocktails'); startCreateCocktail() }}>{withWriteLockIcon('Add Cocktail')}</button>
+            <button className="tab" onClick={() => setMainSection('tasting')}>Log Tasting</button>
+            <button className="tab" onClick={() => loadApiData()} disabled={loading}>{loading ? 'Refreshing...' : 'Refresh Data'}</button>
+          </div>
         </article>
       </section>
 
       <section className="top-switch">
         <button
-          className={mainSection === 'records' ? 'tab active' : 'tab'}
-          onClick={() => setMainSection('records')}
+          className={mainSection === 'library' ? 'tab active' : 'tab'}
+          onClick={() => setMainSection('library')}
         >
-          Records Workspace
+          Library
         </button>
         <button
           className={mainSection === 'tasting' ? 'tab active' : 'tab'}
           onClick={() => setMainSection('tasting')}
         >
-          Calendar / Tasting Log
+          Tasting
         </button>
         <button
-          className={mainSection === 'recommendations' ? 'tab active' : 'tab'}
-          onClick={() => setMainSection('recommendations')}
+          className={mainSection === 'mixlab' ? 'tab active' : 'tab'}
+          onClick={() => setMainSection('mixlab')}
         >
-          Recommendation Engine
+          Mix Lab and AI
         </button>
         <button
-          className={mainSection === 'ai' ? 'tab active' : 'tab'}
-          onClick={() => setMainSection('ai')}
+          className={mainSection === 'insights' ? 'tab active' : 'tab'}
+          onClick={() => setMainSection('insights')}
         >
-          AI Twist Assistant
-        </button>
-        <button
-          className={mainSection === 'analytics' ? 'tab active' : 'tab'}
-          onClick={() => setMainSection('analytics')}
-        >
-          Analytics Dashboard
+          Insights
         </button>
         <button
           className={mainSection === 'settings' ? 'tab active' : 'tab'}
@@ -2209,7 +2672,7 @@ export default function App() {
         </button>
       </section>
 
-      {mainSection === 'records' ? (
+      {mainSection === 'library' ? (
       <section className="workspace">
         <div className="toolbar">
           <div className="tabs">
@@ -2283,10 +2746,10 @@ export default function App() {
                 type="number"
                 step="0.1"
                 min="0"
-                max="10"
-                placeholder="Min rating"
+                max="5"
+                placeholder="Min rating (0-5)"
                 value={cocktailMinRatingFilter}
-                onChange={(e) => setCocktailMinRatingFilter(e.target.value)}
+                onChange={(e) => updateCocktailMinRatingFilter(e.target.value)}
               />
               <select
                 className="filter-input"
@@ -2371,11 +2834,11 @@ export default function App() {
               <h3>Alcohol Editor</h3>
               <div className="advanced-row">
                 <button className="tab" onClick={startEditAlcohol} disabled={!selectedAlcohol?._rowid}>
-                  Update
+                  {withWriteLockIcon('Update')}
                 </button>
-                <button className="tab" onClick={startCreateAlcohol}>Add New</button>
+                <button className="tab" onClick={startCreateAlcohol}>{withWriteLockIcon('Add New')}</button>
                 <button className="tab" onClick={deleteSelectedAlcohol} disabled={!selectedAlcohol?._rowid}>
-                  Delete
+                  {withWriteLockIcon('Delete')}
                 </button>
                 {alcoholEditorMode !== 'view' && (
                   <button className="tab" onClick={fetchAlcoholImageCandidates} disabled={alcoholImageFetchLoading || !String(alcoholForm.Brand || '').trim()}>
@@ -2464,6 +2927,7 @@ export default function App() {
                       title="Alcohol by volume percentage (e.g., 40%)."
                       value={alcoholForm.ABV}
                       onChange={(e) => updateAlcoholFormField('ABV', e.target.value)}
+                      onBlur={() => finalizeAlcoholFormattedField('ABV')}
                     />
                     <input
                       className="filter-input"
@@ -2480,7 +2944,9 @@ export default function App() {
                       title="Bottle price (NZD, typically for 700ml)."
                       value={alcoholForm.Price_NZD_700ml}
                       onChange={(e) => updateAlcoholFormField('Price_NZD_700ml', e.target.value)}
+                      onBlur={() => finalizeAlcoholFormattedField('Price_NZD_700ml')}
                     />
+                    <p className="field-help">ABV auto-stores with `%` and Price auto-stores with `$`.</p>
                     <input
                       className="filter-input"
                       type="text"
@@ -2519,7 +2985,18 @@ export default function App() {
                     onDragOver={(event) => event.preventDefault()}
                     onDrop={handleAlcoholImageDrop}
                   >
-                    Drop or paste image to save in <code>images/liquors</code> (Brand required)
+                    Drop or paste image to save in <code>images/liquors</code> (Brand required). Images auto-convert to JPEG under 5MB.
+                  </div>
+                  <div className="advanced-row">
+                    <label className="tab image-picker-btn" htmlFor="alcohol-image-picker">Take / Choose Photo</label>
+                    <input
+                      id="alcohol-image-picker"
+                      className="image-file-input"
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      onChange={handleAlcoholImagePickerChange}
+                    />
                   </div>
                   {alcoholImageCandidates.length > 0 && (
                     <div className="image-candidate-list">
@@ -2552,7 +3029,7 @@ export default function App() {
                   )}
                   <div className="advanced-row">
                     <button className="tab active" onClick={saveAlcoholForm}>
-                      {alcoholEditorMode === 'edit' ? 'Save Update' : 'Create'}
+                      {alcoholEditorMode === 'edit' ? withWriteLockIcon('Save Update') : withWriteLockIcon('Create')}
                     </button>
                     <button className="tab" onClick={cancelAlcoholEdit}>Cancel</button>
                   </div>
@@ -2652,11 +3129,11 @@ export default function App() {
               <h3>Cocktail Editor</h3>
               <div className="advanced-row">
                 <button className="tab" onClick={startEditCocktail} disabled={!selectedCocktail?._rowid}>
-                  Update
+                  {withWriteLockIcon('Update')}
                 </button>
-                <button className="tab" onClick={startCreateCocktail}>Add New</button>
+                <button className="tab" onClick={startCreateCocktail}>{withWriteLockIcon('Add New')}</button>
                 <button className="tab" onClick={deleteSelectedCocktail} disabled={!selectedCocktail?._rowid}>
-                  Delete
+                  {withWriteLockIcon('Delete')}
                 </button>
               </div>
 
@@ -2736,6 +3213,7 @@ export default function App() {
                       value={cocktailForm.Difficulty}
                       onChange={(e) => updateCocktailFormField('Difficulty', e.target.value)}
                     />
+                    <p className="field-help">Rating and difficulty must be `0-5` (decimals allowed).</p>
                     <input
                       className="filter-input"
                       type="text"
@@ -2798,11 +3276,22 @@ export default function App() {
                     onDragOver={(event) => event.preventDefault()}
                     onDrop={handleCocktailImageDrop}
                   >
-                    Drop or paste image to save in <code>images/cocktails</code> (Cocktail Name required)
+                    Drop or paste image to save in <code>images/cocktails</code> (Cocktail Name required). Images auto-convert to JPEG under 5MB.
+                  </div>
+                  <div className="advanced-row">
+                    <label className="tab image-picker-btn" htmlFor="cocktail-image-picker">Take / Choose Photo</label>
+                    <input
+                      id="cocktail-image-picker"
+                      className="image-file-input"
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      onChange={handleCocktailImagePickerChange}
+                    />
                   </div>
                   <div className="advanced-row">
                     <button className="tab active" onClick={saveCocktailForm}>
-                      {cocktailEditorMode === 'edit' ? 'Save Update' : 'Create'}
+                      {cocktailEditorMode === 'edit' ? withWriteLockIcon('Save Update') : withWriteLockIcon('Create')}
                     </button>
                     <button className="tab" onClick={cancelCocktailEdit}>Cancel</button>
                   </div>
@@ -2876,11 +3365,12 @@ export default function App() {
                 type="number"
                 step="0.1"
                 min="0"
-                max="10"
-                placeholder="Rating (0-10)"
+                max="5"
+                placeholder="Rating (0-5)"
                 value={tastingForm.rating}
-                onChange={(e) => setTastingForm((prev) => ({ ...prev, rating: e.target.value }))}
+                onChange={(e) => updateTastingRatingField(e.target.value)}
               />
+              <p className="field-help">Tasting rating is stored as `0-5` (decimals allowed).</p>
               <select
                 className="filter-input"
                 value={tastingForm.would_make_again}
@@ -2936,7 +3426,7 @@ export default function App() {
                 value={tastingForm.change_next_time}
                 onChange={(e) => setTastingForm((prev) => ({ ...prev, change_next_time: e.target.value }))}
               />
-              <button className="tab active" onClick={addTastingLog}>Add Entry</button>
+              <button className="tab active" onClick={addTastingLog}>{withWriteLockIcon('Add Entry')}</button>
             </div>
 
             <div className="tasting-slider-grid">
@@ -2954,6 +3444,48 @@ export default function App() {
                   <strong>{tastingForm[dimension.key] || '-'}</strong>
                 </label>
               ))}
+            </div>
+
+            <div className="analytics-grid tasting-visual-grid">
+              <article className="panel chart-panel">
+                <h3>Rating Trend</h3>
+                <div className="chart-wrap">
+                  {ratingTrendChartData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={ratingTrendChartData}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5d6bf" />
+                        <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                        <YAxis domain={[0, 5]} tick={{ fontSize: 12 }} />
+                        <Tooltip />
+                        <Line type="monotone" dataKey="avg" stroke="#7a4f24" strokeWidth={3} dot={{ r: 3 }} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <p className="empty">No tasting ratings yet.</p>
+                  )}
+                </div>
+              </article>
+
+              <article className="panel chart-panel">
+                <h3>Make Again Split</h3>
+                <div className="chart-wrap">
+                  {makeAgainChartData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie data={makeAgainChartData} dataKey="value" nameKey="name" outerRadius={86} innerRadius={46}>
+                          {makeAgainChartData.map((entry, index) => (
+                            <Cell key={`make-again-${entry.name}`} fill={index === 0 ? '#a86f35' : '#ead8bc'} />
+                          ))}
+                        </Pie>
+                        <Tooltip formatter={(value) => `${Number(value).toFixed(1)}%`} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <p className="empty">No make-again data yet.</p>
+                  )}
+                </div>
+                <p className="empty chart-caption">Would make again: {wouldMakeAgainDisplay}</p>
+              </article>
             </div>
 
             <h3>Tasting Entries ({tastingLogsSorted.length})</h3>
@@ -2984,7 +3516,7 @@ export default function App() {
                       <td>{entry.wouldMakeAgain || '-'}</td>
                       <td>{entry.notes || '-'}</td>
                       <td>
-                        <button className="saved-view-remove" onClick={() => removeTastingLog(entry.id)}>×</button>
+                        <button className="saved-view-remove" onClick={() => removeTastingLog(entry.id)}>{isEditUnlocked ? '×' : '🔒 ×'}</button>
                       </td>
                     </tr>
                   ))}
@@ -3072,11 +3604,11 @@ export default function App() {
           </article>
         </div>
       </section>
-      ) : mainSection === 'recommendations' ? (
+      ) : mainSection === 'mixlab' ? (
       <section className="workspace">
         <div className="toolbar">
           <div className="tabs">
-            <button className="tab active">Recommendation Engine</button>
+            <button className="tab active">Mix Lab and AI</button>
           </div>
           <button className="tab" onClick={() => loadApiData()} disabled={loading}>
             {loading ? 'Refreshing...' : 'Refresh Data'}
@@ -3153,8 +3685,98 @@ export default function App() {
             ))}
           </div>
         </article>
+
+        <div className="grid two-col mixlab-ai-grid">
+          <article className="panel">
+            <h3>Refine with AI Twist</h3>
+            <p className="empty">Choose a cocktail, set your constraints, and generate tailored twists.</p>
+            <div className="advanced-row">
+              <select
+                className="filter-input"
+                value={aiProvider}
+                onChange={(e) => setAiProvider(e.target.value)}
+              >
+                <option value="local">Local Fallback Engine</option>
+                <option value="groq">Groq Mode (requires key)</option>
+                <option value="gemini">Gemini Mode (requires key)</option>
+              </select>
+              <select
+                className="filter-input"
+                value={aiCocktailName}
+                onChange={(e) => setAiCocktailName(e.target.value)}
+              >
+                <option value="">Select cocktail</option>
+                {cocktails.map((row) => (
+                  <option key={`ai-${row.Cocktail_Name}`} value={row.Cocktail_Name}>{row.Cocktail_Name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="advanced-row">
+              <input
+                className="filter-input view-name"
+                type="text"
+                value={aiConstraints}
+                onChange={(e) => setAiConstraints(e.target.value)}
+                placeholder="Constraints (e.g. low sugar, no egg white)"
+              />
+            </div>
+
+            <div className="advanced-row">
+              <input
+                className="filter-input view-name"
+                type="text"
+                value={aiPrompt}
+                onChange={(e) => setAiPrompt(e.target.value)}
+                placeholder="Flavor direction (e.g. brighter, spicier, smoky)"
+              />
+              <button className="tab active" onClick={generateAiTwists}>
+                {aiLoading ? 'Generating…' : 'Generate Twists'}
+              </button>
+            </div>
+
+            {aiNote && <p className="loading">{aiNote}</p>}
+          </article>
+
+          <article className="panel">
+            <h3>Suggested Twists ({aiSuggestions.length})</h3>
+            <div className="saved-views">
+              {aiSuggestions.map((suggestion, index) => (
+                <div key={`ai-suggestion-${index}`} className="recommendation-hint">
+                  <strong>{suggestion.name || `Twist ${index + 1}`}</strong>
+                  {suggestion.flavor_goal && <span><strong>Flavor Goal:</strong> {suggestion.flavor_goal}</span>}
+                  {suggestion.substitutions.length > 0 && (
+                    <div className="ai-block">
+                      <strong>Substitutions</strong>
+                      <ul>
+                        {suggestion.substitutions.map((line, lineIndex) => (
+                          <li key={`ai-sub-${index}-${lineIndex}`}>{line}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {suggestion.method.length > 0 && (
+                    <div className="ai-block">
+                      <strong>Method</strong>
+                      <ol>
+                        {suggestion.method.map((line, lineIndex) => (
+                          <li key={`ai-method-${index}-${lineIndex}`}>{line}</li>
+                        ))}
+                      </ol>
+                    </div>
+                  )}
+                  {suggestion.garnish_and_glass && <span><strong>Garnish & Glass:</strong> {suggestion.garnish_and_glass}</span>}
+                  {suggestion.why_it_works && <span><strong>Why it works:</strong> {suggestion.why_it_works}</span>}
+                  {suggestion.difficulty && <span><strong>Difficulty:</strong> {suggestion.difficulty}</span>}
+                  {suggestion.risk_note && <span><strong>Risk note:</strong> {suggestion.risk_note}</span>}
+                  {suggestion.wild_card && <span><strong>Wild card:</strong> {suggestion.wild_card}</span>}
+                </div>
+              ))}
+            </div>
+          </article>
+        </div>
       </section>
-      ) : mainSection === 'analytics' ? (
+      ) : mainSection === 'insights' ? (
       <section className="workspace">
         <div className="toolbar">
           <div className="tabs">
@@ -3166,6 +3788,89 @@ export default function App() {
         </div>
 
         <div className="analytics-grid">
+          <article className="panel chart-panel">
+            <h3>Base Spirit Usage</h3>
+            <div className="chart-wrap">
+              {spiritUsage.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={spiritUsage} layout="vertical" margin={{ left: 8, right: 12, top: 6, bottom: 6 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5d6bf" />
+                    <XAxis type="number" tick={{ fontSize: 12 }} />
+                    <YAxis type="category" width={92} dataKey="name" tick={{ fontSize: 11 }} />
+                    <Tooltip />
+                    <Bar dataKey="count" fill="#7a4f24" radius={[0, 6, 6, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="empty">No spirit usage data yet.</p>
+              )}
+            </div>
+          </article>
+
+          <article className="panel chart-panel">
+            <h3>Difficulty Mix</h3>
+            <div className="chart-wrap">
+              {difficultyMixChartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={difficultyMixChartData} dataKey="value" nameKey="name" outerRadius={84} innerRadius={40}>
+                      {difficultyMixChartData.map((entry, index) => (
+                        <Cell key={`difficulty-${entry.name}`} fill={CHART_SWATCH[index % CHART_SWATCH.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="empty">No difficulty data yet.</p>
+              )}
+            </div>
+          </article>
+
+          <article className="panel chart-panel">
+            <h3>Tasting Trend</h3>
+            <div className="chart-wrap">
+              {ratingTrendChartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={ratingTrendChartData}>
+                    <defs>
+                      <linearGradient id="ratingArea" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#b9873c" stopOpacity={0.5} />
+                        <stop offset="95%" stopColor="#b9873c" stopOpacity={0.08} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5d6bf" />
+                    <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                    <YAxis domain={[0, 5]} tick={{ fontSize: 12 }} />
+                    <Tooltip />
+                    <Area type="monotone" dataKey="avg" stroke="#7a4f24" fill="url(#ratingArea)" strokeWidth={2} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="empty">No tasting ratings yet.</p>
+              )}
+            </div>
+          </article>
+
+          <article className="panel chart-panel">
+            <h3>Flavor Profile</h3>
+            <div className="chart-wrap">
+              {flavorProfileChartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <RadarChart data={flavorProfileChartData}>
+                    <PolarGrid stroke="#e5d6bf" />
+                    <PolarAngleAxis dataKey="dimension" tick={{ fontSize: 11 }} />
+                    <PolarRadiusAxis domain={[0, 5]} tick={{ fontSize: 10 }} />
+                    <Radar dataKey="avg" stroke="#7a4f24" fill="#b9873c" fillOpacity={0.35} />
+                    <Tooltip />
+                  </RadarChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="empty">No flavor profile data yet.</p>
+              )}
+            </div>
+          </article>
+
           <article className="panel">
             <h3>Overview KPIs</h3>
             <div className="kpi-grid">
@@ -3269,6 +3974,19 @@ export default function App() {
 
           <article className="panel">
             <h3>Most Logged Cocktails</h3>
+            <div className="chart-wrap compact-chart-wrap">
+              {topCocktailsChartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={topCocktailsChartData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5d6bf" />
+                    <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} angle={-12} textAnchor="end" height={48} />
+                    <YAxis tick={{ fontSize: 12 }} />
+                    <Tooltip />
+                    <Bar dataKey="entries" fill="#a86f35" radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : null}
+            </div>
             <div className="table-wrap tasting-table">
               <table>
                 <thead>
@@ -3296,6 +4014,20 @@ export default function App() {
 
           <article className="panel">
             <h3>Tasting Mood Breakdown</h3>
+            <div className="chart-wrap compact-chart-wrap">
+              {moodBreakdownChartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={moodBreakdownChartData} dataKey="value" nameKey="name" outerRadius={88}>
+                      {moodBreakdownChartData.map((row, index) => (
+                        <Cell key={`mood-cell-${row.name}`} fill={CHART_SWATCH[index % CHART_SWATCH.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : null}
+            </div>
             <div className="saved-views">
               {(tastingInsights.mood_breakdown || []).map((row) => (
                 <div key={`mood-${row.mood}`} className="recommendation-hint">
@@ -3311,6 +4043,19 @@ export default function App() {
 
           <article className="panel">
             <h3>Ratings by Base Spirit</h3>
+            <div className="chart-wrap compact-chart-wrap">
+              {spiritRatingChartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={spiritRatingChartData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5d6bf" />
+                    <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} angle={-12} textAnchor="end" height={48} />
+                    <YAxis domain={[0, 10]} tick={{ fontSize: 12 }} />
+                    <Tooltip />
+                    <Bar dataKey="avg" fill="#b9873c" radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : null}
+            </div>
             <div className="table-wrap tasting-table">
               <table>
                 <thead>
@@ -3381,6 +4126,25 @@ export default function App() {
 
           <article className="panel">
             <h3>Monthly Tasting Cost Estimate</h3>
+            <div className="chart-wrap compact-chart-wrap">
+              {monthlyCostChartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={monthlyCostChartData}>
+                    <defs>
+                      <linearGradient id="costArea" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#8f6334" stopOpacity={0.45} />
+                        <stop offset="95%" stopColor="#8f6334" stopOpacity={0.08} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5d6bf" />
+                    <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                    <YAxis tick={{ fontSize: 12 }} />
+                    <Tooltip />
+                    <Area type="monotone" dataKey="total" stroke="#8f6334" fill="url(#costArea)" strokeWidth={2} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              ) : null}
+            </div>
             <div className="table-wrap tasting-table">
               <table>
                 <thead>
@@ -3417,6 +4181,53 @@ export default function App() {
             {storageLoading ? 'Refreshing...' : 'Refresh Settings'}
           </button>
         </div>
+
+        {!storageSettings.backup_configured && (
+          <p className="warning settings-warning">Warning: Backup location is not configured. Configure storage backup below.</p>
+        )}
+
+        <article className="panel edit-access-panel">
+          <h3>Edit Access</h3>
+          <p className="empty">View access is open. Editing actions require a password entered here.</p>
+          <div className="advanced-row">
+            <input
+              className="filter-input view-name"
+              type="password"
+              value={editAccessPassword}
+              onChange={(e) => setEditAccessPassword(e.target.value)}
+              placeholder="Enter edit password"
+            />
+            <button className="tab active" onClick={unlockEditAccess}>Unlock</button>
+            <button className="tab" onClick={() => lockEditAccess(true)} disabled={!isEditUnlocked}>Lock now</button>
+          </div>
+          <p className="field-help">
+            {isEditUnlocked
+              ? `Unlocked in this tab. Auto-lock in ${remainingEditUnlockMinutes} minute(s) without protected actions.`
+              : 'Editing is currently locked. Protected write buttons will prompt for password in Settings.'}
+          </p>
+        </article>
+
+        <article className="panel settings-diagnostics">
+          <h3>System & Connectivity</h3>
+          <div className="advanced-row">
+            <span className={`api-badge ${apiHealth}`}>{apiHealth.toUpperCase()}</span>
+            <span className="api-version">{APP_VERSION}</span>
+            <span className="api-message">{apiHealthMessage}</span>
+            <button className="tab api-retry" onClick={() => loadApiData()} disabled={loading}>
+              {loading ? 'Reconnecting...' : 'Retry Connection'}
+            </button>
+          </div>
+          <dl className="detail-list">
+            <div className="detail-row">
+              <dt>API Base</dt>
+              <dd>{API_BASE}</dd>
+            </div>
+            <div className="detail-row">
+              <dt>Last Refreshed</dt>
+              <dd>{lastRefreshedAt ? formatDateTime(lastRefreshedAt) : '-'}</dd>
+            </div>
+          </dl>
+        </article>
 
         <div className="grid two-col">
           <article className="panel">
@@ -3484,10 +4295,10 @@ export default function App() {
                 {storageLoading ? 'Checking...' : 'Preflight Check'}
               </button>
               <button className="tab" onClick={mirrorStorageNow} disabled={storageMirroring || storageApplying || storageLoading}>
-                {storageMirroring ? 'Mirroring...' : 'Mirror Now'}
+                {storageMirroring ? 'Mirroring...' : withWriteLockIcon('Mirror Now')}
               </button>
               <button className="tab active" onClick={applyStorageSettings} disabled={storageApplying || storageLoading || !String(storageRootInput || '').trim()}>
-                {storageApplying ? 'Applying...' : 'Apply'}
+                {storageApplying ? 'Applying...' : withWriteLockIcon('Apply')}
               </button>
             </div>
             <p className="empty">If selected folder has no <code>cocktail_database.db</code> and no <code>images</code> folder, current data is copied there. Otherwise existing and current data are merged. On restart, configured `.env` paths are loaded automatically.</p>
@@ -3552,108 +4363,7 @@ export default function App() {
           </article>
         </div>
       </section>
-      ) : (
-      <section className="workspace">
-        <div className="toolbar">
-          <div className="tabs">
-            <button className="tab active">AI Twist Assistant</button>
-          </div>
-          <button className="tab" onClick={() => loadApiData()} disabled={loading}>
-            {loading ? 'Refreshing...' : 'Refresh Data'}
-          </button>
-        </div>
-
-        <div className="grid two-col">
-          <article className="panel">
-            <h3>AI Twist Assistant</h3>
-            <p className="empty">Generate detailed twists with substitutions, method steps, and adventurous variants.</p>
-            <div className="advanced-row">
-              <select
-                className="filter-input"
-                value={aiProvider}
-                onChange={(e) => setAiProvider(e.target.value)}
-              >
-                <option value="local">Local Fallback Engine</option>
-                <option value="groq">Groq Mode (requires key)</option>
-                <option value="gemini">Gemini Mode (requires key)</option>
-              </select>
-              <select
-                className="filter-input"
-                value={aiCocktailName}
-                onChange={(e) => setAiCocktailName(e.target.value)}
-              >
-                <option value="">Select cocktail</option>
-                {cocktails.map((row) => (
-                  <option key={`ai-${row.Cocktail_Name}`} value={row.Cocktail_Name}>{row.Cocktail_Name}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="advanced-row">
-              <input
-                className="filter-input view-name"
-                type="text"
-                value={aiConstraints}
-                onChange={(e) => setAiConstraints(e.target.value)}
-                placeholder="Constraints (e.g. low sugar, no egg white)"
-              />
-            </div>
-
-            <div className="advanced-row">
-              <input
-                className="filter-input view-name"
-                type="text"
-                value={aiPrompt}
-                onChange={(e) => setAiPrompt(e.target.value)}
-                placeholder="Flavor direction (e.g. brighter, spicier, smoky)"
-              />
-              <button className="tab active" onClick={generateAiTwists}>
-                {aiLoading ? 'Generating…' : 'Generate Twists'}
-              </button>
-            </div>
-
-            {aiNote && <p className="loading">{aiNote}</p>}
-          </article>
-
-          <article className="panel">
-            <h3>Suggested Twists ({aiSuggestions.length})</h3>
-            <div className="saved-views">
-              {aiSuggestions.map((suggestion, index) => (
-                <div key={`ai-suggestion-${index}`} className="recommendation-hint">
-                  <strong>{suggestion.name || `Twist ${index + 1}`}</strong>
-                  {suggestion.flavor_goal && <span><strong>Flavor Goal:</strong> {suggestion.flavor_goal}</span>}
-                  {suggestion.substitutions.length > 0 && (
-                    <div className="ai-block">
-                      <strong>Substitutions</strong>
-                      <ul>
-                        {suggestion.substitutions.map((line, lineIndex) => (
-                          <li key={`ai-sub-${index}-${lineIndex}`}>{line}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  {suggestion.method.length > 0 && (
-                    <div className="ai-block">
-                      <strong>Method</strong>
-                      <ol>
-                        {suggestion.method.map((line, lineIndex) => (
-                          <li key={`ai-method-${index}-${lineIndex}`}>{line}</li>
-                        ))}
-                      </ol>
-                    </div>
-                  )}
-                  {suggestion.garnish_and_glass && <span><strong>Garnish & Glass:</strong> {suggestion.garnish_and_glass}</span>}
-                  {suggestion.why_it_works && <span><strong>Why it works:</strong> {suggestion.why_it_works}</span>}
-                  {suggestion.difficulty && <span><strong>Difficulty:</strong> {suggestion.difficulty}</span>}
-                  {suggestion.risk_note && <span><strong>Risk note:</strong> {suggestion.risk_note}</span>}
-                  {suggestion.wild_card && <span><strong>Wild card:</strong> {suggestion.wild_card}</span>}
-                </div>
-              ))}
-            </div>
-          </article>
-        </div>
-      </section>
-      )}
+      ) : null}
     </div>
   )
 }
