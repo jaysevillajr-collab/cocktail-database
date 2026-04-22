@@ -171,6 +171,8 @@ TASTING_COLUMNS = [
     "booziness", "body", "aroma", "balance", "finish", "created_at",
 ]
 
+ALCOHOL_AVAILABILITY_VALUES = {"Full", "Half", "Low", "Empty"}
+
 TAG_COLUMNS = ["id", "entity_type", "entity_rowid", "tag", "created_at"]
 SAVED_VIEW_COLUMNS = ["id", "name", "payload_json", "created_at"]
 
@@ -307,9 +309,26 @@ def _normalize_price_value(raw: Any) -> str:
     return text if text.startswith("$") else f"${text}"
 
 
+def _normalize_availability_value(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+
+    lowered = text.lower()
+    if lowered in {"yes", "available"}:
+        return "Full"
+
+    for candidate in ALCOHOL_AVAILABILITY_VALUES:
+        if lowered == candidate.lower():
+            return candidate
+
+    raise HTTPException(status_code=400, detail="Availability must be one of: Full, Half, Low, Empty")
+
+
 def _normalize_alcohol_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     data["ABV"] = _normalize_abv_value(data.get("ABV", ""))
     data["Price_NZD_700ml"] = _normalize_price_value(data.get("Price_NZD_700ml", ""))
+    data["Availability"] = _normalize_availability_value(data.get("Availability", ""))
     return data
 
 
@@ -3586,6 +3605,82 @@ def create_tasting_log(payload: TastingLogCreateRequest) -> TastingLogItem:
         "finish": payload.finish,
         "created_at": _now_local_iso(),
     }
+
+    if USE_SUPABASE:
+        _pg_execute(
+            """
+            INSERT INTO tasting_log (
+                id, date, cocktail_name, rating, notes,
+                mood, occasion, location, would_make_again, change_next_time,
+                sweetness, sourness, bitterness, booziness,
+                body, aroma, balance, finish,
+                created_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                item["id"],
+                item["date"],
+                item["cocktail_name"],
+                item["rating"],
+                item["notes"],
+                item["mood"],
+                item["occasion"],
+                item["location"],
+                item["would_make_again"],
+                item["change_next_time"],
+                item["sweetness"],
+                item["sourness"],
+                item["bitterness"],
+                item["booziness"],
+                item["body"],
+                item["aroma"],
+                item["balance"],
+                item["finish"],
+                item["created_at"],
+            ),
+        )
+
+        def _mirror_insert_tasting() -> None:
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO tasting_log (
+                        id, date, cocktail_name, rating, notes,
+                        mood, occasion, location, would_make_again, change_next_time,
+                        sweetness, sourness, bitterness, booziness,
+                        body, aroma, balance, finish,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item["id"],
+                        item["date"],
+                        item["cocktail_name"],
+                        item["rating"],
+                        item["notes"],
+                        item["mood"],
+                        item["occasion"],
+                        item["location"],
+                        item["would_make_again"],
+                        item["change_next_time"],
+                        item["sweetness"],
+                        item["sourness"],
+                        item["bitterness"],
+                        item["booziness"],
+                        item["body"],
+                        item["aroma"],
+                        item["balance"],
+                        item["finish"],
+                        item["created_at"],
+                    ),
+                )
+                conn.commit()
+
+        _mirror_local("create_tasting_log", _mirror_insert_tasting)
+        return TastingLogItem(**item)
 
     with get_connection() as conn:
         cur = conn.cursor()

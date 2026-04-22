@@ -29,6 +29,7 @@ const EDIT_UNLOCK_SESSION_KEY = 'cocktail_web_edit_unlock_at_v1'
 const EDIT_ACCESS_PASSWORD = 'knocktwiceonly'
 const EDIT_UNLOCK_MAX_AGE_MS = 60 * 60 * 1000
 const EDIT_LOCKED_MESSAGE = 'Editing is locked. Enter the password in Settings to continue.'
+const AVAILABILITY_OPTIONS = ['Full', 'Half', 'Low', 'Empty']
 const EMPTY_ALCOHOL_FORM = {
   Brand: '',
   Base_Liquor: '',
@@ -40,6 +41,26 @@ const EMPTY_ALCOHOL_FORM = {
   Substitute: '',
   Availability: '',
   image_path: ''
+}
+
+function formatNowLocalIsoSeconds() {
+  const now = new Date()
+  const yyyy = String(now.getFullYear())
+  const mm = String(now.getMonth() + 1).padStart(2, '0')
+  const dd = String(now.getDate()).padStart(2, '0')
+  const hh = String(now.getHours()).padStart(2, '0')
+  const mi = String(now.getMinutes()).padStart(2, '0')
+  const ss = String(now.getSeconds()).padStart(2, '0')
+  return `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}`
+}
+
+function uniqueSortedValues(values) {
+  return [...new Set(values.filter((value) => String(value || '').trim()).map((value) => String(value).trim()))]
+    .sort((a, b) => a.localeCompare(b))
+}
+
+function formsEqualByKeys(left, right, keys) {
+  return keys.every((key) => String(left?.[key] || '').trim() === String(right?.[key] || '').trim())
 }
 
 function formatShortMonth(value) {
@@ -704,7 +725,7 @@ export default function App() {
     open: false,
     title: '',
     message: '',
-    action: null
+    buttons: []
   })
   const [error, setError] = useState('')
   const [alcoholCountryFlagPath, setAlcoholCountryFlagPath] = useState('')
@@ -795,12 +816,24 @@ export default function App() {
       open: true,
       title: String(title || '').trim(),
       message: String(message || '').trim(),
-      action: typeof action === 'function' ? action : null
+      buttons: [
+        { label: 'Cancel', style: 'tab', action: null },
+        { label: 'Confirm', style: 'tab active', action: typeof action === 'function' ? action : null }
+      ]
+    })
+  }
+
+  const openChoiceConfirm = (title, message, buttons) => {
+    setConfirmDialog({
+      open: true,
+      title: String(title || '').trim(),
+      message: String(message || '').trim(),
+      buttons: Array.isArray(buttons) ? buttons : []
     })
   }
 
   const closeConfirm = () => {
-    setConfirmDialog({ open: false, title: '', message: '', action: null })
+    setConfirmDialog({ open: false, title: '', message: '', buttons: [] })
   }
 
   useEffect(() => {
@@ -1240,9 +1273,87 @@ export default function App() {
   }, [alcohol])
 
   const alcoholAvailabilityOptions = useMemo(() => {
-    const values = [...new Set(alcohol.map((row) => row.Availability).filter(Boolean))]
-    return values.sort((a, b) => a.localeCompare(b))
+    const values = uniqueSortedValues(alcohol.map((row) => row.Availability))
+    return uniqueSortedValues([...AVAILABILITY_OPTIONS, ...values])
   }, [alcohol])
+
+  const alcoholBaseLiquorSuggestions = useMemo(() => uniqueSortedValues(alcohol.map((row) => row.Base_Liquor)), [alcohol])
+  const alcoholTypeSuggestionsFromData = useMemo(() => uniqueSortedValues(alcohol.map((row) => row.Type)), [alcohol])
+
+  const filteredAlcoholBaseLiquorSuggestions = useMemo(() => {
+    const q = String(alcoholForm.Base_Liquor || '').trim().toLowerCase()
+    if (!q) return alcoholBaseLiquorSuggestions.slice(0, 12)
+    return alcoholBaseLiquorSuggestions.filter((value) => value.toLowerCase().includes(q)).slice(0, 12)
+  }, [alcoholBaseLiquorSuggestions, alcoholForm.Base_Liquor])
+
+  const filteredAlcoholTypeSuggestions = useMemo(() => {
+    const q = String(alcoholForm.Type || '').trim().toLowerCase()
+    if (!q) return alcoholTypeSuggestionsFromData.slice(0, 12)
+    return alcoholTypeSuggestionsFromData.filter((value) => value.toLowerCase().includes(q)).slice(0, 12)
+  }, [alcoholTypeSuggestionsFromData, alcoholForm.Type])
+
+  const alcoholTriplets = useMemo(() => {
+    return alcohol
+      .map((row) => ({
+        base: String(row.Base_Liquor || '').trim(),
+        type: String(row.Type || '').trim(),
+        brand: String(row.Brand || '').trim()
+      }))
+      .filter((entry) => entry.base || entry.type || entry.brand)
+  }, [alcohol])
+
+  const buildSpiritGroupOptions = (selectedBase, selectedType, selectedBrand) => {
+    const baseKey = normalizeNameKey(selectedBase)
+    const typeKey = normalizeNameKey(selectedType)
+    const brandKey = normalizeNameKey(selectedBrand)
+
+    const baseOptions = uniqueSortedValues(
+      alcoholTriplets
+        .filter((entry) => (!typeKey || normalizeNameKey(entry.type) === typeKey) && (!brandKey || normalizeNameKey(entry.brand) === brandKey))
+        .map((entry) => entry.base)
+    )
+
+    const typeOptions = uniqueSortedValues(
+      alcoholTriplets
+        .filter((entry) => (!baseKey || normalizeNameKey(entry.base) === baseKey) && (!brandKey || normalizeNameKey(entry.brand) === brandKey))
+        .map((entry) => entry.type)
+    )
+
+    const brandOptions = uniqueSortedValues(
+      alcoholTriplets
+        .filter((entry) => (!baseKey || normalizeNameKey(entry.base) === baseKey) && (!typeKey || normalizeNameKey(entry.type) === typeKey))
+        .map((entry) => entry.brand)
+    )
+
+    return {
+      bases: uniqueSortedValues([selectedBase, ...baseOptions]),
+      types: uniqueSortedValues([selectedType, ...typeOptions]),
+      brands: uniqueSortedValues([selectedBrand, ...brandOptions])
+    }
+  }
+
+  const spiritGroup1Options = useMemo(
+    () => buildSpiritGroupOptions(cocktailForm.Base_spirit_1, cocktailForm.Type1, cocktailForm.Brand1),
+    [alcoholTriplets, cocktailForm.Base_spirit_1, cocktailForm.Type1, cocktailForm.Brand1]
+  )
+
+  const spiritGroup2Options = useMemo(
+    () => buildSpiritGroupOptions(cocktailForm.Base_spirit_2, cocktailForm.Type2, cocktailForm.Brand2),
+    [alcoholTriplets, cocktailForm.Base_spirit_2, cocktailForm.Type2, cocktailForm.Brand2]
+  )
+
+  const alcoholFormKeys = Object.keys(EMPTY_ALCOHOL_FORM)
+  const cocktailFormKeys = Object.keys(EMPTY_COCKTAIL_FORM)
+
+  const isAlcoholEditDirty = useMemo(() => {
+    if (alcoholEditorMode !== 'edit' || !selectedAlcohol) return false
+    return !formsEqualByKeys(alcoholForm, mapAlcoholRowToForm(selectedAlcohol), alcoholFormKeys)
+  }, [alcoholEditorMode, selectedAlcohol, alcoholForm])
+
+  const isCocktailEditDirty = useMemo(() => {
+    if (cocktailEditorMode !== 'edit' || !selectedCocktail) return false
+    return !formsEqualByKeys(cocktailForm, mapCocktailRowToForm(selectedCocktail), cocktailFormKeys)
+  }, [cocktailEditorMode, selectedCocktail, cocktailForm])
 
   const cocktailBaseSpiritOptions = useMemo(() => {
     const values = [...new Set(cocktails.map((row) => row.Base_spirit_1).filter(Boolean))]
@@ -1747,7 +1858,7 @@ export default function App() {
     if (!ensureEditAccess()) return
 
     setSelectedCocktail(null)
-    setCocktailForm({ ...EMPTY_COCKTAIL_FORM, image_path: 'images/cocktails/' })
+    setCocktailForm({ ...EMPTY_COCKTAIL_FORM, image_path: 'images/cocktails/', DatetimeAdded: formatNowLocalIsoSeconds() })
     setCocktailEditorMode('create')
   }
 
@@ -1922,8 +2033,10 @@ export default function App() {
       await loadStorageSettings(true)
       setError('')
       showSuccess(hasRowId ? 'Cocktail updated' : 'Cocktail created')
+      return item
     } catch (e) {
       setError(e.message || 'Failed to save cocktail record')
+      return null
     }
   }
 
@@ -2190,9 +2303,100 @@ export default function App() {
       await loadStorageSettings(true)
       setError('')
       showSuccess(hasRowId ? 'Alcohol updated' : 'Alcohol created')
+      return item
     } catch (e) {
       setError(e.message || 'Failed to save alcohol record')
+      return null
     }
+  }
+
+  const selectAlcoholWithGuard = (row) => {
+    const targetRow = row || null
+    if (targetRow === selectedAlcohol) return
+
+    const hasPending =
+      (alcoholEditorMode === 'edit' && isAlcoholEditDirty) ||
+      (alcoholEditorMode === 'create' && Boolean(String(alcoholForm.Brand || '').trim()))
+
+    const applySelection = () => {
+      setSelectedAlcohol(targetRow)
+      setAlcoholEditorMode('view')
+      setAlcoholImageCandidates([])
+      setAlcoholTypeSuggestions([])
+      setAlcoholTypeSuggestionFamily('')
+    }
+
+    if (!hasPending) {
+      applySelection()
+      return
+    }
+
+    openChoiceConfirm('Unsaved Alcohol Changes', 'You have unsaved alcohol changes. What would you like to do?', [
+      {
+        label: alcoholEditorMode === 'create' ? 'Create And Switch' : 'Save And Switch',
+        style: 'tab active',
+        action: async () => {
+          const saved = await saveAlcoholForm()
+          if (!saved) return
+          applySelection()
+        }
+      },
+      {
+        label: 'Discard And Switch',
+        style: 'tab',
+        action: () => {
+          applySelection()
+        }
+      },
+      {
+        label: 'Continue Editing',
+        style: 'tab',
+        action: null
+      }
+    ])
+  }
+
+  const selectCocktailWithGuard = (row) => {
+    const targetRow = row || null
+    if (targetRow === selectedCocktail) return
+
+    const hasPending =
+      (cocktailEditorMode === 'edit' && isCocktailEditDirty) ||
+      (cocktailEditorMode === 'create' && Boolean(String(cocktailForm.Cocktail_Name || '').trim()))
+
+    const applySelection = () => {
+      setSelectedCocktail(targetRow)
+      setCocktailEditorMode('view')
+    }
+
+    if (!hasPending) {
+      applySelection()
+      return
+    }
+
+    openChoiceConfirm('Unsaved Cocktail Changes', 'You have unsaved cocktail changes. What would you like to do?', [
+      {
+        label: cocktailEditorMode === 'create' ? 'Create And Switch' : 'Save And Switch',
+        style: 'tab active',
+        action: async () => {
+          const saved = await saveCocktailForm()
+          if (!saved) return
+          applySelection()
+        }
+      },
+      {
+        label: 'Discard And Switch',
+        style: 'tab',
+        action: () => {
+          applySelection()
+        }
+      },
+      {
+        label: 'Continue Editing',
+        style: 'tab',
+        action: null
+      }
+    ])
   }
 
   const deleteSelectedAlcohol = async () => {
@@ -2424,11 +2628,13 @@ export default function App() {
         })
       })
 
+      const createdPayload = await res.json().catch(() => ({}))
+
       if (!res.ok) {
-        throw new Error('Failed to save tasting log')
+        throw new Error(createdPayload?.detail || 'Failed to save tasting log')
       }
 
-      const created = await res.json()
+      const created = createdPayload
       setTastingLogs((prev) => {
         const next = [normalizeTastingItem(created), ...prev]
         setSelectedTastingLogId(created.id)
@@ -2598,19 +2804,21 @@ export default function App() {
             <h3>{confirmDialog.title || 'Confirm Action'}</h3>
             <p>{confirmDialog.message || 'Are you sure you want to continue?'}</p>
             <div className="advanced-row">
-              <button className="tab" onClick={closeConfirm}>Cancel</button>
-              <button
-                className="tab active"
-                onClick={() => {
-                  const action = confirmDialog.action
-                  closeConfirm()
-                  if (typeof action === 'function') {
-                    action()
-                  }
-                }}
-              >
-                Confirm
-              </button>
+              {confirmDialog.buttons.map((button, idx) => (
+                <button
+                  key={`${button.label}-${idx}`}
+                  className={button.style || 'tab'}
+                  onClick={() => {
+                    const action = button.action
+                    closeConfirm()
+                    if (typeof action === 'function') {
+                      action()
+                    }
+                  }}
+                >
+                  {button.label}
+                </button>
+              ))}
             </div>
           </div>
         </div>
@@ -2811,7 +3019,7 @@ export default function App() {
                       <tr
                         key={`${row.Brand}-${row.Type}-${idx}`}
                         className={selectedAlcohol === row ? 'selected' : ''}
-                        onClick={() => setSelectedAlcohol(row)}
+                        onClick={() => selectAlcoholWithGuard(row)}
                       >
                         <td>{row.Brand || '-'}</td>
                         <td>{row.Base_Liquor || '-'}</td>
@@ -2864,17 +3072,29 @@ export default function App() {
                       type="text"
                       placeholder="Base Liquor"
                       title="Primary liquor family (e.g., Gin, Rum, Vodka, Whiskey)."
+                      list="alcohol-base-liquor-suggestions"
                       value={alcoholForm.Base_Liquor}
                       onChange={(e) => updateAlcoholFormField('Base_Liquor', e.target.value)}
                     />
+                    <datalist id="alcohol-base-liquor-suggestions">
+                      {filteredAlcoholBaseLiquorSuggestions.map((value) => (
+                        <option key={value} value={value} />
+                      ))}
+                    </datalist>
                     <input
                       className="filter-input"
                       type="text"
                       placeholder="Type"
                       title="Style or subtype of the liquor (e.g., London Dry, Bourbon, Blanco)."
+                      list="alcohol-type-suggestions"
                       value={alcoholForm.Type}
                       onChange={(e) => updateAlcoholFormField('Type', e.target.value)}
                     />
+                    <datalist id="alcohol-type-suggestions">
+                      {filteredAlcoholTypeSuggestions.map((value) => (
+                        <option key={value} value={value} />
+                      ))}
+                    </datalist>
                     <button
                       className="tab"
                       type="button"
@@ -2947,14 +3167,17 @@ export default function App() {
                       onBlur={() => finalizeAlcoholFormattedField('Price_NZD_700ml')}
                     />
                     <p className="field-help">ABV auto-stores with `%` and Price auto-stores with `$`.</p>
-                    <input
+                    <select
                       className="filter-input"
-                      type="text"
-                      placeholder="Availability"
-                      title="Current availability status (e.g., Yes/No, In stock)."
+                      title="Current availability status for this bottle."
                       value={alcoholForm.Availability}
                       onChange={(e) => updateAlcoholFormField('Availability', e.target.value)}
-                    />
+                    >
+                      <option value="">Availability</option>
+                      {AVAILABILITY_OPTIONS.map((value) => (
+                        <option key={value} value={value}>{value}</option>
+                      ))}
+                    </select>
                     <input
                       className="filter-input"
                       type="text"
@@ -2962,14 +3185,6 @@ export default function App() {
                       title="Alternative bottle you can use if this one is unavailable."
                       value={alcoholForm.Substitute}
                       onChange={(e) => updateAlcoholFormField('Substitute', e.target.value)}
-                    />
-                    <input
-                      className="filter-input"
-                      type="text"
-                      placeholder="Image Path"
-                      title="Relative path to the alcohol image file."
-                      value={alcoholForm.image_path}
-                      onChange={(e) => updateAlcoholFormField('image_path', e.target.value)}
                     />
                     <textarea
                       className="ingredients-input"
@@ -3040,6 +3255,8 @@ export default function App() {
                 {alcoholImageUrl ? <img className="editor-image" src={alcoholImageUrl} alt="Alcohol" /> : <p className="empty">No alcohol image</p>}
               </div>
 
+              {alcoholEditorMode === 'view' && (
+              <>
               <h3>Alcohol Details</h3>
               {selectedAlcohol ? (
                 <dl className="detail-list">
@@ -3076,13 +3293,11 @@ export default function App() {
                     <dt>Availability</dt>
                     <dd>{selectedAlcohol.Availability || '-'}</dd>
                   </div>
-                  <div className="detail-row">
-                    <dt>Image Path</dt>
-                    <dd>{selectedAlcohol.image_path || '-'}</dd>
-                  </div>
                 </dl>
               ) : (
                 <p className="empty">Select a row to view details.</p>
+              )}
+              </>
               )}
             </article>
           </div>
@@ -3106,7 +3321,7 @@ export default function App() {
                       <tr
                         key={`${row.Cocktail_Name}-${idx}`}
                         className={selectedCocktail === row ? 'selected' : ''}
-                        onClick={() => setSelectedCocktail(row)}
+                        onClick={() => selectCocktailWithGuard(row)}
                       >
                         <td>{row.Cocktail_Name || '-'}</td>
                         <td>{row.Base_spirit_1 || '-'}</td>
@@ -3149,54 +3364,82 @@ export default function App() {
                       value={cocktailForm.Cocktail_Name}
                       onChange={(e) => updateCocktailFormField('Cocktail_Name', e.target.value)}
                     />
-                    <input
-                      className="filter-input"
-                      type="text"
-                      placeholder="Base Spirit 1"
-                      title="Primary base spirit used in the cocktail (e.g., Gin, Rum, Tequila)."
-                      value={cocktailForm.Base_spirit_1}
-                      onChange={(e) => updateCocktailFormField('Base_spirit_1', e.target.value)}
-                    />
-                    <input
-                      className="filter-input"
-                      type="text"
-                      placeholder="Type 1"
-                      title="Style/category of Base Spirit 1 (e.g., London Dry, Blanco, Añejo)."
-                      value={cocktailForm.Type1}
-                      onChange={(e) => updateCocktailFormField('Type1', e.target.value)}
-                    />
-                    <input
-                      className="filter-input"
-                      type="text"
-                      placeholder="Brand 1"
-                      title="Specific bottle brand for Base Spirit 1 used in this recipe."
-                      value={cocktailForm.Brand1}
-                      onChange={(e) => updateCocktailFormField('Brand1', e.target.value)}
-                    />
-                    <input
-                      className="filter-input"
-                      type="text"
-                      placeholder="Base Spirit 2"
-                      title="Secondary base spirit, if the cocktail uses two spirit bases."
-                      value={cocktailForm.Base_spirit_2}
-                      onChange={(e) => updateCocktailFormField('Base_spirit_2', e.target.value)}
-                    />
-                    <input
-                      className="filter-input"
-                      type="text"
-                      placeholder="Type 2"
-                      title="Style/category of Base Spirit 2."
-                      value={cocktailForm.Type2}
-                      onChange={(e) => updateCocktailFormField('Type2', e.target.value)}
-                    />
-                    <input
-                      className="filter-input"
-                      type="text"
-                      placeholder="Brand 2"
-                      title="Specific bottle brand for Base Spirit 2."
-                      value={cocktailForm.Brand2}
-                      onChange={(e) => updateCocktailFormField('Brand2', e.target.value)}
-                    />
+                    <div className="spirit-group-card">
+                      <strong>Primary Spirit</strong>
+                      <div className="spirit-group-grid">
+                        <select
+                          className="filter-input"
+                          value={cocktailForm.Base_spirit_1}
+                          onChange={(e) => updateCocktailFormField('Base_spirit_1', e.target.value)}
+                          title="Primary base spirit used in the cocktail."
+                        >
+                          <option value="">Base Spirit 1</option>
+                          {spiritGroup1Options.bases.map((value) => (
+                            <option key={`spirit1-base-${value}`} value={value}>{value}</option>
+                          ))}
+                        </select>
+                        <select
+                          className="filter-input"
+                          value={cocktailForm.Type1}
+                          onChange={(e) => updateCocktailFormField('Type1', e.target.value)}
+                          title="Style/category for Base Spirit 1."
+                        >
+                          <option value="">Type 1</option>
+                          {spiritGroup1Options.types.map((value) => (
+                            <option key={`spirit1-type-${value}`} value={value}>{value}</option>
+                          ))}
+                        </select>
+                        <select
+                          className="filter-input"
+                          value={cocktailForm.Brand1}
+                          onChange={(e) => updateCocktailFormField('Brand1', e.target.value)}
+                          title="Brand for Base Spirit 1."
+                        >
+                          <option value="">Brand 1</option>
+                          {spiritGroup1Options.brands.map((value) => (
+                            <option key={`spirit1-brand-${value}`} value={value}>{value}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="spirit-group-card">
+                      <strong>Secondary Spirit</strong>
+                      <div className="spirit-group-grid">
+                        <select
+                          className="filter-input"
+                          value={cocktailForm.Base_spirit_2}
+                          onChange={(e) => updateCocktailFormField('Base_spirit_2', e.target.value)}
+                          title="Secondary base spirit, if used."
+                        >
+                          <option value="">Base Spirit 2</option>
+                          {spiritGroup2Options.bases.map((value) => (
+                            <option key={`spirit2-base-${value}`} value={value}>{value}</option>
+                          ))}
+                        </select>
+                        <select
+                          className="filter-input"
+                          value={cocktailForm.Type2}
+                          onChange={(e) => updateCocktailFormField('Type2', e.target.value)}
+                          title="Style/category for Base Spirit 2."
+                        >
+                          <option value="">Type 2</option>
+                          {spiritGroup2Options.types.map((value) => (
+                            <option key={`spirit2-type-${value}`} value={value}>{value}</option>
+                          ))}
+                        </select>
+                        <select
+                          className="filter-input"
+                          value={cocktailForm.Brand2}
+                          onChange={(e) => updateCocktailFormField('Brand2', e.target.value)}
+                          title="Brand for Base Spirit 2."
+                        >
+                          <option value="">Brand 2</option>
+                          {spiritGroup2Options.brands.map((value) => (
+                            <option key={`spirit2-brand-${value}`} value={value}>{value}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
                     <input
                       className="filter-input"
                       type="text"
@@ -3244,15 +3487,7 @@ export default function App() {
                       placeholder="Date Added"
                       title="Date/time this cocktail entry was added (auto or manual)."
                       value={cocktailForm.DatetimeAdded}
-                      onChange={(e) => updateCocktailFormField('DatetimeAdded', e.target.value)}
-                    />
-                    <input
-                      className="filter-input"
-                      type="text"
-                      placeholder="Image Path"
-                      title="Relative path to the cocktail image file."
-                      value={cocktailForm.image_path}
-                      onChange={(e) => updateCocktailFormField('image_path', e.target.value)}
+                      readOnly
                     />
                     <textarea
                       className="ingredients-input"
@@ -3302,6 +3537,8 @@ export default function App() {
                 {cocktailImageUrl ? <img className="editor-image" src={cocktailImageUrl} alt="Cocktail" /> : <p className="empty">No cocktail image</p>}
               </div>
 
+              {cocktailEditorMode === 'view' && (
+              <>
               <h3>Cocktail Details</h3>
               {renderDetail(selectedCocktail, [
                 ['Name', 'Cocktail_Name'],
@@ -3312,17 +3549,18 @@ export default function App() {
                 ['Base Spirit 1', 'Base_spirit_1'],
                 ['Type 1', 'Type1'],
                 ['Brand 1', 'Brand1'],
-                ['Base Spirit 2', 'Base_spirit_2'],
-                ['Type 2', 'Type2'],
-                ['Brand 2', 'Brand2'],
+                ...(String(selectedCocktail?.Base_spirit_2 || '').trim() ? [['Base Spirit 2', 'Base_spirit_2']] : []),
+                ...(String(selectedCocktail?.Type2 || '').trim() ? [['Type 2', 'Type2']] : []),
+                ...(String(selectedCocktail?.Brand2 || '').trim() ? [['Brand 2', 'Brand2']] : []),
                 ['Citrus', 'Citrus'],
                 ['Garnish', 'Garnish'],
                 ['Prep Time', 'Prep_Time'],
                 ['Difficulty', 'Difficulty'],
                 ['Notes', 'Notes'],
-                ['Date Added', 'DatetimeAdded'],
-                ['Image Path', 'image_path']
+                ['Date Added', 'DatetimeAdded']
               ])}
+              </>
+              )}
             </article>
           </div>
         )}

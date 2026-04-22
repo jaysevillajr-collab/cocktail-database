@@ -33,6 +33,7 @@ load_env_file()
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SQLITE_PATH = (REPO_ROOT / "cocktail_database.db").resolve()
+AVAILABILITY_VALUES = {"Full", "Half", "Low", "Empty"}
 
 
 def format_score(value: float) -> str:
@@ -79,6 +80,22 @@ def normalize_price(raw: Any) -> str:
     return text if text.startswith("$") else f"${text}"
 
 
+def normalize_availability(raw: Any) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+
+    lowered = text.lower()
+    if lowered in {"yes", "available"}:
+        return "Full"
+
+    for candidate in AVAILABILITY_VALUES:
+        if lowered == candidate.lower():
+            return candidate
+
+    return text
+
+
 def normalize_cocktail_fields(row: Dict[str, Any]) -> Tuple[Dict[str, str], List[str]]:
     updates: Dict[str, str] = {}
     issues: List[str] = []
@@ -121,6 +138,11 @@ def normalize_alcohol_fields(row: Dict[str, Any]) -> Tuple[Dict[str, str], List[
     if price_next != price_original:
         updates["Price_NZD_700ml"] = price_next
 
+    availability_original = str(row.get("Availability") or "")
+    availability_next = normalize_availability(availability_original)
+    if availability_next != availability_original:
+        updates["Availability"] = availability_next
+
     return updates, issues
 
 
@@ -149,8 +171,13 @@ def process_sqlite(sqlite_path: Path, apply: bool) -> Dict[str, Any]:
             report["tables"]["alcohol_inventory"]["rows_changed"] += 1
             if apply:
                 cur.execute(
-                    "UPDATE alcohol_inventory SET ABV = ?, Price_NZD_700ml = ? WHERE rowid = ?",
-                    (updates.get("ABV", row.get("ABV", "")), updates.get("Price_NZD_700ml", row.get("Price_NZD_700ml", "")), row["rowid"]),
+                    "UPDATE alcohol_inventory SET ABV = ?, Price_NZD_700ml = ?, Availability = ? WHERE rowid = ?",
+                    (
+                        updates.get("ABV", row.get("ABV", "")),
+                        updates.get("Price_NZD_700ml", row.get("Price_NZD_700ml", "")),
+                        updates.get("Availability", row.get("Availability", "")),
+                        row["rowid"],
+                    ),
                 )
 
         cur.execute("SELECT rowid, * FROM cocktail_notes")
@@ -208,7 +235,7 @@ def process_supabase(db_url: str, apply: bool) -> Dict[str, Any]:
 
     with psycopg.connect(db_url, prepare_threshold=None, row_factory=dict_row) as conn:
         with conn.cursor() as cur:
-            cur.execute('SELECT id, "ABV", "Price_NZD_700ml" FROM alcohol_inventory')
+            cur.execute('SELECT id, "ABV", "Price_NZD_700ml", "Availability" FROM alcohol_inventory')
             alcohol_rows = [dict(item) for item in cur.fetchall()]
             for row in alcohol_rows:
                 updates, issues = normalize_alcohol_fields(row)
@@ -218,10 +245,11 @@ def process_supabase(db_url: str, apply: bool) -> Dict[str, Any]:
                 report["tables"]["alcohol_inventory"]["rows_changed"] += 1
                 if apply:
                     cur.execute(
-                        'UPDATE alcohol_inventory SET "ABV" = %s, "Price_NZD_700ml" = %s WHERE id = %s',
+                        'UPDATE alcohol_inventory SET "ABV" = %s, "Price_NZD_700ml" = %s, "Availability" = %s WHERE id = %s',
                         (
                             updates.get("ABV", row.get("ABV", "")),
                             updates.get("Price_NZD_700ml", row.get("Price_NZD_700ml", "")),
+                            updates.get("Availability", row.get("Availability", "")),
                             row["id"],
                         ),
                     )

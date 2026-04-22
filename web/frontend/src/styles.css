@@ -869,6 +869,31 @@ tbody tr.selected {
   margin-top: 8px;
 }
 
+.spirit-group-card {
+  border: 1px solid #e2d3bd;
+  border-radius: 10px;
+  padding: 10px;
+  background: #fcf7ed;
+}
+
+.spirit-group-card > strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #5a3a1e;
+}
+
+.spirit-group-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 980px) {
+  .spirit-group-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .empty {
   color: #6f6356;
 }
