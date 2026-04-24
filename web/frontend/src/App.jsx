@@ -29,6 +29,7 @@ const EDIT_UNLOCK_SESSION_KEY = 'cocktail_web_edit_unlock_at_v1'
 const EDIT_ACCESS_PASSWORD = 'knocktwiceonly'
 const EDIT_UNLOCK_MAX_AGE_MS = 60 * 60 * 1000
 const EDIT_LOCKED_MESSAGE = 'Editing is locked. Enter the password in Settings to continue.'
+const STARTUP_FETCH_TIMEOUT_MS = 12000
 const AVAILABILITY_OPTIONS = ['Full', 'Half', 'Low', 'Empty']
 const EMPTY_ALCOHOL_FORM = {
   Brand: '',
@@ -385,6 +386,21 @@ function wait(ms) {
   })
 }
 
+function fetchWithTimeout(url, timeoutMs = STARTUP_FETCH_TIMEOUT_MS, options = {}) {
+  return new Promise((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(new Error(`Request timed out: ${url}`))
+    }, timeoutMs)
+
+    fetch(url, options)
+      .then((response) => resolve(response))
+      .catch((error) => reject(error))
+      .finally(() => {
+        window.clearTimeout(timeoutId)
+      })
+  })
+}
+
 function resolveImageUrl(imagePath) {
   const raw = String(imagePath || '').trim()
   if (!raw) return ''
@@ -706,6 +722,7 @@ export default function App() {
   const [tastingLogs, setTastingLogs] = useState([])
   const [selectedTastingLogId, setSelectedTastingLogId] = useState('')
   const [tastingForm, setTastingForm] = useState(buildEmptyTastingForm())
+  const [isTastingFormOpen, setIsTastingFormOpen] = useState(false)
   const [tastingMonth, setTastingMonth] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1))
   const [tastingInsights, setTastingInsights] = useState(EMPTY_TASTING_INSIGHTS)
   const [availableIngredientsInput, setAvailableIngredientsInput] = useState('')
@@ -880,13 +897,13 @@ export default function App() {
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
         const [countsResult, alcoholResult, cocktailsResult, tastingResult, savedViewsResult, costResult, tastingInsightsResult] = await Promise.allSettled([
-          fetch(`${API_BASE}/meta/counts`),
-          fetch(`${API_BASE}/alcohol?limit=500&offset=0`),
-          fetch(`${API_BASE}/cocktails?limit=500&offset=0`),
-          fetch(`${API_BASE}/tasting-logs`),
-          fetch(`${API_BASE}/saved-views`),
-          fetch(`${API_BASE}/analytics/cost-insights`),
-          fetch(`${API_BASE}/analytics/tasting-insights`)
+          fetchWithTimeout(`${API_BASE}/meta/counts`),
+          fetchWithTimeout(`${API_BASE}/alcohol?limit=500&offset=0`),
+          fetchWithTimeout(`${API_BASE}/cocktails?limit=500&offset=0`),
+          fetchWithTimeout(`${API_BASE}/tasting-logs`),
+          fetchWithTimeout(`${API_BASE}/saved-views`),
+          fetchWithTimeout(`${API_BASE}/analytics/cost-insights`),
+          fetchWithTimeout(`${API_BASE}/analytics/tasting-insights`)
         ])
 
         const endpointFailures = []
@@ -1367,6 +1384,8 @@ export default function App() {
       return right.localeCompare(left)
     })
   }, [tastingLogs])
+
+  const tastingLogsRecent = useMemo(() => tastingLogsSorted.slice(0, 50), [tastingLogsSorted])
 
   const tastingMonthLabel = useMemo(
     () => tastingMonth.toLocaleString(undefined, { month: 'long', year: 'numeric' }),
@@ -3580,153 +3599,125 @@ export default function App() {
 
         <div className="grid two-col">
           <article className="panel">
-            <h3>Add Tasting Entry</h3>
-            <div className="advanced-row">
-              <input
-                className="filter-input"
-                type="date"
-                value={tastingForm.date}
-                onChange={(e) => setTastingForm((prev) => ({ ...prev, date: e.target.value }))}
-              />
-              <select
-                className="filter-input"
-                value={tastingForm.cocktail_name}
-                onChange={(e) => setTastingForm((prev) => ({ ...prev, cocktail_name: e.target.value }))}
+            <div className="panel-header-row">
+              <h3>Add Tasting Entry</h3>
+              <button
+                className="tab"
+                onClick={() => setIsTastingFormOpen((prev) => !prev)}
+                aria-label={isTastingFormOpen ? 'Collapse Add Tasting Entry form' : 'Expand Add Tasting Entry form'}
               >
-                <option value="">Select cocktail</option>
-                {cocktails.map((row) => (
-                  <option key={row.Cocktail_Name} value={row.Cocktail_Name}>{row.Cocktail_Name}</option>
-                ))}
-              </select>
-              <input
-                className="filter-input"
-                type="number"
-                step="0.1"
-                min="0"
-                max="5"
-                placeholder="Rating (0-5)"
-                value={tastingForm.rating}
-                onChange={(e) => updateTastingRatingField(e.target.value)}
-              />
-              <p className="field-help">Tasting rating is stored as `0-5` (decimals allowed).</p>
-              <select
-                className="filter-input"
-                value={tastingForm.would_make_again}
-                onChange={(e) => setTastingForm((prev) => ({ ...prev, would_make_again: e.target.value }))}
-              >
-                <option value="">Make again?</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
+                {isTastingFormOpen ? '-' : '+'}
+              </button>
             </div>
 
-            <div className="advanced-row">
-              <select
-                className="filter-input"
-                value={tastingForm.mood}
-                onChange={(e) => setTastingForm((prev) => ({ ...prev, mood: e.target.value }))}
-              >
-                <option value="">Mood</option>
-                <option value="Relaxed">Relaxed</option>
-                <option value="Celebratory">Celebratory</option>
-                <option value="Experimental">Experimental</option>
-                <option value="Social">Social</option>
-                <option value="After-work">After-work</option>
-              </select>
-              <input
-                className="filter-input"
-                type="text"
-                placeholder="Occasion"
-                value={tastingForm.occasion}
-                onChange={(e) => setTastingForm((prev) => ({ ...prev, occasion: e.target.value }))}
-              />
-              <input
-                className="filter-input"
-                type="text"
-                placeholder="Location"
-                value={tastingForm.location}
-                onChange={(e) => setTastingForm((prev) => ({ ...prev, location: e.target.value }))}
-              />
-              <input
-                className="filter-input view-name"
-                type="text"
-                placeholder="Notes (optional)"
-                value={tastingForm.notes}
-                onChange={(e) => setTastingForm((prev) => ({ ...prev, notes: e.target.value }))}
-              />
-            </div>
-
-            <div className="advanced-row">
-              <input
-                className="filter-input view-name"
-                type="text"
-                placeholder="What would you change next time?"
-                value={tastingForm.change_next_time}
-                onChange={(e) => setTastingForm((prev) => ({ ...prev, change_next_time: e.target.value }))}
-              />
-              <button className="tab active" onClick={addTastingLog}>{withWriteLockIcon('Add Entry')}</button>
-            </div>
-
-            <div className="tasting-slider-grid">
-              {TASTING_DIMENSIONS.map((dimension) => (
-                <label key={`slider-${dimension.key}`} className="tasting-slider-item">
-                  <span>{dimension.label}</span>
+            {isTastingFormOpen && (
+              <>
+                <div className="advanced-row">
                   <input
-                    type="range"
-                    min="1"
-                    max="5"
-                    step="1"
-                    value={tastingForm[dimension.key] || 3}
-                    onChange={(e) => setTastingForm((prev) => ({ ...prev, [dimension.key]: e.target.value }))}
+                    className="filter-input"
+                    type="date"
+                    value={tastingForm.date}
+                    onChange={(e) => setTastingForm((prev) => ({ ...prev, date: e.target.value }))}
                   />
-                  <strong>{tastingForm[dimension.key] || '-'}</strong>
-                </label>
-              ))}
-            </div>
-
-            <div className="analytics-grid tasting-visual-grid">
-              <article className="panel chart-panel">
-                <h3>Rating Trend</h3>
-                <div className="chart-wrap">
-                  {ratingTrendChartData.length > 0 ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={ratingTrendChartData}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e5d6bf" />
-                        <XAxis dataKey="month" tick={{ fontSize: 12 }} />
-                        <YAxis domain={[0, 5]} tick={{ fontSize: 12 }} />
-                        <Tooltip />
-                        <Line type="monotone" dataKey="avg" stroke="#7a4f24" strokeWidth={3} dot={{ r: 3 }} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <p className="empty">No tasting ratings yet.</p>
-                  )}
+                  <select
+                    className="filter-input"
+                    value={tastingForm.cocktail_name}
+                    onChange={(e) => setTastingForm((prev) => ({ ...prev, cocktail_name: e.target.value }))}
+                  >
+                    <option value="">Select cocktail</option>
+                    {cocktails.map((row) => (
+                      <option key={row.Cocktail_Name} value={row.Cocktail_Name}>{row.Cocktail_Name}</option>
+                    ))}
+                  </select>
+                  <input
+                    className="filter-input"
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    max="5"
+                    placeholder="Rating (0-5)"
+                    value={tastingForm.rating}
+                    onChange={(e) => updateTastingRatingField(e.target.value)}
+                  />
+                  <p className="field-help">Tasting rating is stored as `0-5` (decimals allowed).</p>
+                  <select
+                    className="filter-input"
+                    value={tastingForm.would_make_again}
+                    onChange={(e) => setTastingForm((prev) => ({ ...prev, would_make_again: e.target.value }))}
+                  >
+                    <option value="">Make again?</option>
+                    <option value="yes">Yes</option>
+                    <option value="no">No</option>
+                  </select>
                 </div>
-              </article>
 
-              <article className="panel chart-panel">
-                <h3>Make Again Split</h3>
-                <div className="chart-wrap">
-                  {makeAgainChartData.length > 0 ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie data={makeAgainChartData} dataKey="value" nameKey="name" outerRadius={86} innerRadius={46}>
-                          {makeAgainChartData.map((entry, index) => (
-                            <Cell key={`make-again-${entry.name}`} fill={index === 0 ? '#a86f35' : '#ead8bc'} />
-                          ))}
-                        </Pie>
-                        <Tooltip formatter={(value) => `${Number(value).toFixed(1)}%`} />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <p className="empty">No make-again data yet.</p>
-                  )}
+                <div className="advanced-row">
+                  <select
+                    className="filter-input"
+                    value={tastingForm.mood}
+                    onChange={(e) => setTastingForm((prev) => ({ ...prev, mood: e.target.value }))}
+                  >
+                    <option value="">Mood</option>
+                    <option value="Relaxed">Relaxed</option>
+                    <option value="Celebratory">Celebratory</option>
+                    <option value="Experimental">Experimental</option>
+                    <option value="Social">Social</option>
+                    <option value="After-work">After-work</option>
+                  </select>
+                  <input
+                    className="filter-input"
+                    type="text"
+                    placeholder="Occasion"
+                    value={tastingForm.occasion}
+                    onChange={(e) => setTastingForm((prev) => ({ ...prev, occasion: e.target.value }))}
+                  />
+                  <input
+                    className="filter-input"
+                    type="text"
+                    placeholder="Location"
+                    value={tastingForm.location}
+                    onChange={(e) => setTastingForm((prev) => ({ ...prev, location: e.target.value }))}
+                  />
+                  <input
+                    className="filter-input view-name"
+                    type="text"
+                    placeholder="Notes (optional)"
+                    value={tastingForm.notes}
+                    onChange={(e) => setTastingForm((prev) => ({ ...prev, notes: e.target.value }))}
+                  />
                 </div>
-                <p className="empty chart-caption">Would make again: {wouldMakeAgainDisplay}</p>
-              </article>
-            </div>
 
-            <h3>Tasting Entries ({tastingLogsSorted.length})</h3>
+                <div className="advanced-row">
+                  <input
+                    className="filter-input view-name"
+                    type="text"
+                    placeholder="What would you change next time?"
+                    value={tastingForm.change_next_time}
+                    onChange={(e) => setTastingForm((prev) => ({ ...prev, change_next_time: e.target.value }))}
+                  />
+                  <button className="tab active" onClick={addTastingLog}>{withWriteLockIcon('Add Entry')}</button>
+                </div>
+
+                <div className="tasting-slider-grid">
+                  {TASTING_DIMENSIONS.map((dimension) => (
+                    <label key={`slider-${dimension.key}`} className="tasting-slider-item">
+                      <span>{dimension.label}</span>
+                      <input
+                        type="range"
+                        min="1"
+                        max="5"
+                        step="1"
+                        value={tastingForm[dimension.key] || 3}
+                        onChange={(e) => setTastingForm((prev) => ({ ...prev, [dimension.key]: e.target.value }))}
+                      />
+                      <strong>{tastingForm[dimension.key] || '-'}</strong>
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
+
+            <h3>Tasting Entries (Last {Math.min(50, tastingLogsSorted.length)} of {tastingLogsSorted.length})</h3>
             <div className="table-wrap tasting-table">
               <table>
                 <thead>
@@ -3741,7 +3732,7 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {tastingLogsSorted.map((entry) => (
+                  {tastingLogsRecent.map((entry) => (
                     <tr
                       key={entry.id}
                       className={selectedTastingLog?.id === entry.id ? 'selected' : ''}
@@ -3758,12 +3749,15 @@ export default function App() {
                       </td>
                     </tr>
                   ))}
+                  {tastingLogsRecent.length === 0 && (
+                    <tr>
+                      <td colSpan={7}>No tasting entries yet.</td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
-          </article>
 
-          <article className="panel">
             <h3>Tasting Entry Details</h3>
             {selectedTastingLog ? (
               selectedTastingDetailRows.length > 0 || selectedTastingRatingStars || selectedTastingFlavorRows.length > 0 ? (
@@ -3821,6 +3815,9 @@ export default function App() {
             ) : (
               <p className="empty">Select a tasting entry to view full details.</p>
             )}
+          </article>
+
+          <article className="panel">
 
             <h3>Month Summary</h3>
             <p className="empty">Entries: {tastingMonthSummary.count} • Avg Rating: {tastingMonthSummary.avgRating}</p>
@@ -3839,6 +3836,46 @@ export default function App() {
                 </div>
               ))}
             </div>
+
+            <article className="panel chart-panel">
+              <h3>Rating Trend</h3>
+              <div className="chart-wrap">
+                {ratingTrendChartData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={ratingTrendChartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5d6bf" />
+                      <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                      <YAxis domain={[0, 5]} tick={{ fontSize: 12 }} />
+                      <Tooltip />
+                      <Line type="monotone" dataKey="avg" stroke="#7a4f24" strokeWidth={3} dot={{ r: 3 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className="empty">No tasting ratings yet.</p>
+                )}
+              </div>
+            </article>
+
+            <article className="panel chart-panel">
+              <h3>Make Again Split</h3>
+              <div className="chart-wrap">
+                {makeAgainChartData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={makeAgainChartData} dataKey="value" nameKey="name" outerRadius={86} innerRadius={46}>
+                        {makeAgainChartData.map((entry, index) => (
+                          <Cell key={`make-again-${entry.name}`} fill={index === 0 ? '#a86f35' : '#ead8bc'} />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={(value) => `${Number(value).toFixed(1)}%`} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className="empty">No make-again data yet.</p>
+                )}
+              </div>
+              <p className="empty chart-caption">Would make again: {wouldMakeAgainDisplay}</p>
+            </article>
           </article>
         </div>
       </section>

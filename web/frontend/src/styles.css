@@ -531,6 +531,18 @@ body {
   margin-bottom: 10px;
 }
 
+.panel-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.panel-header-row h3 {
+  margin: 0;
+}
+
 .field-help {
   margin: 0;
   font-size: 0.78rem;
@@ -715,7 +727,7 @@ body {
 }
 
 .tasting-table {
-  max-height: 360px;
+  max-height: 460px;
 }
 
 table {
